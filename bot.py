@@ -19,7 +19,7 @@ NOTION_QA_DB_ID = os.getenv("NOTION_QA_ID")
 # イベント用（イベント名 / 内容 / 日時）
 NOTION_EVENT_DB_ID = os.getenv("NOTION_EVENT_ID")
 
-# 別チャンネル紐付け
+# チャンネル紐付け
 EVENT_CHANNEL_ID = int(os.getenv("EVENT_CHANNEL_ID", 0))
 QA_CHANNEL_ID = int(os.getenv("QA_CHANNEL_ID", 0))
 
@@ -65,10 +65,11 @@ def normalize_date(date_str: str, time_str: str):
     return dt.isoformat()
 
 
-# ======================================================
+# ==============================
 # イベント管理機能
-# ======================================================
+# ==============================
 
+# イベント追加
 def notion_add_event(name, content, date_iso, message_id, creator_id):
     url = "https://api.notion.com/v1/pages"
     data = {
@@ -91,12 +92,12 @@ def notion_add_event(name, content, date_iso, message_id, creator_id):
     notion_update_event(page_id, page_uuid=page_id)
     return page_id
 
-
+# イベント情報取得
 def notion_get_event(page_id):
     res = requests.get(f"https://api.notion.com/v1/pages/{page_id}", headers=headers)
     return res.json() if "id" in res.json() else None
 
-
+# イベント情報更新
 def notion_update_event(page_id, name=None, content=None, date_iso=None, message_id=None, page_uuid=None):
     props = {}
 
@@ -114,7 +115,7 @@ def notion_update_event(page_id, name=None, content=None, date_iso=None, message
     res = requests.patch(f"https://api.notion.com/v1/pages/{page_id}", headers=headers, json={"properties": props})
     return res.status_code in (200, 201)
 
-
+# イベント削除
 def notion_delete_event(page_id):
     return requests.delete(f"https://api.notion.com/v1/pages/{page_id}", headers=headers).status_code in (200, 201)
 
@@ -187,7 +188,7 @@ class EventEditModal(discord.ui.Modal, title="イベント編集"):
         await msg.edit(embed=embed, view=EventView(self.page_id, self.message_id, creator_id))
         await interaction.response.send_message("✏️ 更新しました", ephemeral=True)
 
-
+# イベントをGUI上から編集・削除
 class EventView(discord.ui.View):
     def __init__(self, page_id, message_id, creator_id):
         super().__init__(timeout=None)
@@ -239,6 +240,7 @@ class EventCommands(commands.Cog):
         self.bot = bot
 
     @app_commands.command(name="event", description="イベントを登録します")
+    # timeが未入力なら00:00にセット
     async def event(self, interaction, name: str, date: str, time: str = "00:00"):
         if not is_event_channel(interaction):
             return await interaction.response.send_message(
@@ -251,7 +253,7 @@ class EventCommands(commands.Cog):
 
         await interaction.response.send_modal(EventCreateModal(name, date, time))
 
-
+# 内容はモーダル入力
 class EventCreateModal(discord.ui.Modal, title="イベント登録"):
     def __init__(self, name, date, time):
         super().__init__()
@@ -282,9 +284,9 @@ class EventCreateModal(discord.ui.Modal, title="イベント登録"):
         await msg.edit(embed=embed, view=EventView(page_id, msg.id, interaction.user.id))
 
 
-# ======================================================
-# ここから Q&A 機能
-# ======================================================
+# ===========================
+# Q&A 機能
+# ===========================
 
 def fetch_qa_db():
     url = f"https://api.notion.com/v1/databases/{NOTION_QA_DB_ID}/query"
@@ -357,14 +359,14 @@ def update_answer(page_id, answer):
     }
     return requests.patch(url, headers=headers, json=data).status_code == 200
 
-
+# QAの通知
 async def send_qa_notification(bot, ctype, page):
     if QA_CHANNEL_ID == 0:
         return
 
     ch = await bot.fetch_channel(QA_CHANNEL_ID)
 
-    # None 対策：None の場合は "?" を表示
+    # None の場合は "?" を表示
     number = page["properties"]["質問番号"]["number"]
     number_display = number if number is not None else "?"
 
@@ -386,12 +388,12 @@ async def send_qa_notification(bot, ctype, page):
 
     await ch.send(msg)
 
-
+# 内容のモーダル入力
 class AnswerModal(discord.ui.Modal):
     def __init__(self, page_id, number, question_text):
         super().__init__(title=f"回答入力（#{number}）")
         self.page_id = page_id
-        self.number = number          # ← ここでインスタンス変数として保持
+        self.number = number          
         self.question_text = question_text
 
         self.answer = discord.ui.TextInput(
@@ -413,7 +415,7 @@ class AnswerModal(discord.ui.Modal):
                 ephemeral=True
             )
 
-
+# 質問をプルダウンメニューから番号で選択
 class AnswerSelectView(discord.ui.View):
     def __init__(self, pages):
         super().__init__(timeout=120)
@@ -436,7 +438,6 @@ class AnswerSelectView(discord.ui.View):
 
             options.append(discord.SelectOption(label=f"#{number}", value=pid))
 
-        # ← Select は1つだけ作る
         select = discord.ui.Select(
             placeholder="質問番号を選択",
             options=options,
@@ -457,7 +458,7 @@ class AnswerSelectView(discord.ui.View):
             AnswerModal(pid, number, question)
         )
 
-
+# コマンド本体
 class QACommands(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -470,7 +471,7 @@ class QACommands(commands.Cog):
                 ephemeral=True,
             )
         
-        # 実行時にも最新番号へ
+        # 番号更新
         renumber_questions()
 
         pages = fetch_unanswered()
@@ -483,11 +484,8 @@ class QACommands(commands.Cog):
             "回答する質問を選択してください", view=AnswerSelectView(pages), ephemeral=True
         )
 
-
+# Notion Q&A DB を読み込み、質問番号プロパティに 1〜 の番号を付ける
 def renumber_questions():
-    """
-    Notion Q&A DB を読み込み、質問番号プロパティに 1〜 の番号を付ける。
-    """
     url = f"https://api.notion.com/v1/databases/{NOTION_QA_DB_ID}/query"
     res = requests.post(url, headers=headers, json={})
     if res.status_code != 200:
@@ -512,14 +510,16 @@ def renumber_questions():
     print(f"✅ 質問番号を {len(pages)} 件再採番しました。")
 
 
-# ======================================================
+# ===========================
 # 自動タスク
-# ======================================================
+# ===========================
+
+# 終了したイベントの削除
 @tasks.loop(hours=24)
 async def auto_clean():
     delete_past_events()
 
-
+# QAの更新チェック
 FIRST_RUN = True
 
 @tasks.loop(hours=6)
@@ -561,9 +561,9 @@ async def auto_check_qa(bot):
             await send_qa_notification(bot, ctype, page)
 
 
-# ======================================================
+# ===========================
 # Bot 本体
-# ======================================================
+# ===========================
 class MyBot(commands.Bot):
     async def setup_hook(self):
         await self.add_cog(EventCommands(self))
