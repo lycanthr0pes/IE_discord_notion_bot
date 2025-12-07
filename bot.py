@@ -14,10 +14,10 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 
 # Q&A 用（質問 / 回答）
-NOTION_QA_DB_ID = os.getenv("NOTION_DATABASE_ID")
+NOTION_QA_DB_ID = os.getenv("NOTION_QA_ID")
 
 # イベント用（イベント名 / 内容 / 日時）
-NOTION_EVENT_DB_ID = os.getenv("NOTION_DB_ID")
+NOTION_EVENT_DB_ID = os.getenv("NOTION_EVENT_ID")
 
 # 別チャンネル紐付け
 EVENT_CHANNEL_ID = int(os.getenv("EVENT_CHANNEL_ID", 0))
