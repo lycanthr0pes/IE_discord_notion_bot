@@ -361,45 +361,101 @@ def update_answer(page_id, answer):
 async def send_qa_notification(bot, ctype, page):
     if QA_CHANNEL_ID == 0:
         return
+
     ch = await bot.fetch_channel(QA_CHANNEL_ID)
+
+    # None 対策：None の場合は "?" を表示
+    number = page["properties"]["質問番号"]["number"]
+    number_display = number if number is not None else "?"
+
     q = get_question(page)
     a = get_answer(page)
+
     if ctype == "new":
-        msg = f"🆕 **新しい質問が追加されました！**\n**質問:** {q}\n**回答:** {a}"
+        msg = (
+            f"🆕 **新しい質問 (#{number_display}) が追加されました！**\n"
+            f"**質問:** {q}\n"
+            f"**回答:** {a}"
+        )
     else:
-        msg = f"✏️ **回答が更新されました！**\n**質問:** {q}\n**回答:** {a}"
+        msg = (
+            f"✏️ **質問 (#{number_display}) の回答が更新されました！**\n"
+            f"**質問:** {q}\n"
+            f"**回答:** {a}"
+        )
+
     await ch.send(msg)
 
 
-class AnswerModal(discord.ui.Modal, title="回答入力"):
-    def __init__(self, page_id, question):
-        super().__init__()
+class AnswerModal(discord.ui.Modal):
+    def __init__(self, page_id, number, question_text):
+        super().__init__(title=f"回答入力（#{number}）")
         self.page_id = page_id
-        self.ans = discord.ui.TextInput(label="回答", style=discord.TextStyle.paragraph)
-        self.add_item(self.ans)
+        self.number = number          # ← ここでインスタンス変数として保持
+        self.question_text = question_text
 
-    async def on_submit(self, interaction):
-        if update_answer(self.page_id, self.ans.value):
-            await interaction.response.send_message("✅ 保存しました。", ephemeral=True)
+        self.answer = discord.ui.TextInput(
+            label=f"質問: {question_text}",
+            style=discord.TextStyle.paragraph
+        )
+        self.add_item(self.answer)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        ok = update_answer(self.page_id, self.answer.value)
+        if ok:
+            await interaction.response.send_message(
+                f"✅ 回答を保存しました。（#{self.number}）",
+                ephemeral=True
+            )
         else:
-            await interaction.response.send_message("❌ 更新に失敗しました。", ephemeral=True)
+            await interaction.response.send_message(
+                "❌ 回答の保存に失敗しました。",
+                ephemeral=True
+            )
 
 
 class AnswerSelectView(discord.ui.View):
     def __init__(self, pages):
         super().__init__(timeout=120)
-        self.questions = {p["id"]: get_question(p) for p in pages[:25]}
-        options = [
-            discord.SelectOption(label=(q if len(q) <= 100 else q[:97]+"..."), value=pid)
-            for pid, q in self.questions.items()
-        ]
-        select = discord.ui.Select(placeholder="質問を選択", options=options)
+
+        # 番号と質問を保存
+        self.page_info = {}
+
+        options = []
+
+        # 25件までSelectに追加
+        for page in pages[:25]:
+            pid = page["id"]
+            number = page["properties"]["質問番号"]["number"]
+            question = get_question(page)
+
+            self.page_info[pid] = {
+                "number": number,
+                "question": question
+            }
+
+            options.append(discord.SelectOption(label=f"#{number}", value=pid))
+
+        # ← Select は1つだけ作る
+        select = discord.ui.Select(
+            placeholder="質問番号を選択",
+            options=options,
+            min_values=1,
+            max_values=1
+        )
         select.callback = self.on_select
+
         self.add_item(select)
 
     async def on_select(self, interaction):
         pid = interaction.data["values"][0]
-        await interaction.response.send_modal(AnswerModal(pid, self.questions[pid]))
+        info = self.page_info[pid]
+        number = info["number"]
+        question = info["question"]
+
+        await interaction.response.send_modal(
+            AnswerModal(pid, number, question)
+        )
 
 
 class QACommands(commands.Cog):
@@ -413,6 +469,9 @@ class QACommands(commands.Cog):
                 f"❌ このコマンドは <#{QA_CHANNEL_ID}> でのみ実行できます。",
                 ephemeral=True,
             )
+        
+        # 実行時にも最新番号へ
+        renumber_questions()
 
         pages = fetch_unanswered()
         if not pages:
@@ -425,6 +484,34 @@ class QACommands(commands.Cog):
         )
 
 
+def renumber_questions():
+    """
+    Notion Q&A DB を読み込み、質問番号プロパティに 1〜 の番号を付ける。
+    """
+    url = f"https://api.notion.com/v1/databases/{NOTION_QA_DB_ID}/query"
+    res = requests.post(url, headers=headers, json={})
+    if res.status_code != 200:
+        print("❌ 番号再計算エラー:", res.text)
+        return
+
+    pages = res.json().get("results", [])
+
+    for index, page in enumerate(pages, start=1):
+        page_id = page["id"]
+
+        # Notion の質問番号プロパティへ保存
+        data = {
+            "properties": {
+                "質問番号": {
+                    "number": index
+                }
+            }
+        }
+        requests.patch(f"https://api.notion.com/v1/pages/{page_id}", headers=headers, json=data)
+
+    print(f"✅ 質問番号を {len(pages)} 件再採番しました。")
+
+
 # ======================================================
 # 自動タスク
 # ======================================================
@@ -435,6 +522,9 @@ async def auto_clean():
 
 @tasks.loop(hours=6)
 async def auto_check_qa(bot):
+    # 変更チェックの前に番号を最新化
+    renumber_questions()
+
     changes = get_changes()
     for ctype, page in changes:
         await send_qa_notification(bot, ctype, page)
@@ -458,6 +548,9 @@ bot = MyBot(command_prefix="!", intents=intents)
 @bot.event
 async def on_ready():
     print(f"Bot Ready as {bot.user}")
+
+    # 起動時に質問番号をリセット
+    renumber_questions()
 
     # イベント自動削除タスク
     if not auto_clean.is_running():
