@@ -520,14 +520,45 @@ async def auto_clean():
     delete_past_events()
 
 
+FIRST_RUN = True
+
 @tasks.loop(hours=6)
 async def auto_check_qa(bot):
-    # 変更チェックの前に番号を最新化
-    renumber_questions()
+    global FIRST_RUN
 
-    changes = get_changes()
+    renumber_questions()
+    data = fetch_qa_db()
+    if not data:
+        return
+
+    pages = data["results"]
+    cache = load_cache()
+    new_cache = {}
+
+    changes = []
+
+    for page in pages:
+        pid = page["id"]
+        last = page["last_edited_time"]
+        new_cache[pid] = last
+
+        if pid not in cache:
+            changes.append(("new", page))
+        elif cache[pid] != last:
+            changes.append(("update", page))
+
+    # 起動時は通知せずキャッシュだけ作成
+    if FIRST_RUN:
+        print("Skipping QA notifications on first run.")
+        save_cache(new_cache)
+        FIRST_RUN = False
+        return
+
+    # 2回目以降は未回答のみ通知
+    save_cache(new_cache)
     for ctype, page in changes:
-        await send_qa_notification(bot, ctype, page)
+        if get_answer(page) == "(回答なし)":
+            await send_qa_notification(bot, ctype, page)
 
 
 # ======================================================
