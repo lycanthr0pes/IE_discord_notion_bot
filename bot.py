@@ -19,7 +19,7 @@ NOTION_QA_DB_ID = os.getenv("NOTION_QA_ID")
 # イベント用（イベント名 / 内容 / 日時 / メッセージID / 作成者ID / ページID）
 NOTION_EVENT_DB_ID = os.getenv("NOTION_EVENT_ID")
 
-# 別チャンネル紐付け
+# チャンネル紐付け
 EVENT_CHANNEL_ID = int(os.getenv("EVENT_CHANNEL_ID", 0))
 QA_CHANNEL_ID = int(os.getenv("QA_CHANNEL_ID", 0))
 
@@ -73,7 +73,7 @@ def normalize_date(date_str: str, time_str: str) -> str:
 # ======================================================
 
 def notion_add_event(name, content, date_iso, message_id, creator_id):
-    """イベントをNotionに新規作成"""
+    # イベントをNotionに新規作成
     url = "https://api.notion.com/v1/pages"
     data = {
         "parent": {"database_id": NOTION_EVENT_DB_ID},
@@ -88,6 +88,7 @@ def notion_add_event(name, content, date_iso, message_id, creator_id):
     }
     res = requests.post(url, headers=headers, json=data)
     if res.status_code not in (200, 201):
+        # ログ出力
         print("❌ Notion作成エラー:", res.text)
         return None
 
@@ -120,11 +121,21 @@ def notion_update_event(page_id, name=None, content=None, date_iso=None, message
 
 
 def notion_delete_event(page_id):
-    return requests.delete(f"https://api.notion.com/v1/pages/{page_id}", headers=headers).status_code in (200, 201)
+    url = f"https://api.notion.com/v1/pages/{page_id}"
+    data = {"archived": True}
+
+    res = requests.patch(url, headers=headers, json=data)
+
+    #ログ出力
+    if res.status_code not in (200, 201):
+        print("❌ Notion削除エラー:", res.text)
+        return False
+
+    return True
 
 
 def delete_past_events():
-    """過去の日付のイベントをNotionから削除（Discordメッセージはそのまま）"""
+    # 過去の日付のイベントをNotionから削除（Discordメッセージはそのまま）
     url = f"https://api.notion.com/v1/databases/{NOTION_EVENT_DB_ID}/query"
     res = requests.post(url, headers=headers, json={}).json()
 
@@ -140,10 +151,11 @@ def delete_past_events():
 
 
 def fetch_event_pages():
-    """イベント一覧を取得"""
+    # イベント一覧を取得
     url = f"https://api.notion.com/v1/databases/{NOTION_EVENT_DB_ID}/query"
     res = requests.post(url, headers=headers, json={})
     if res.status_code != 200:
+        # ログ出力
         print("❌ イベント一覧取得失敗:", res.text)
         return []
     return res.json().get("results", [])
@@ -202,7 +214,6 @@ class EventCreateModal(discord.ui.Modal, title="イベント登録"):
         # イベント名
         self.name = discord.ui.TextInput(
             label="イベント名",
-            placeholder="例：新歓ミーティング",
             required=True
         )
         self.add_item(self.name)
@@ -228,7 +239,6 @@ class EventCreateModal(discord.ui.Modal, title="イベント登録"):
             label="内容",
             style=discord.TextStyle.paragraph,
             required=False,
-            placeholder="例：準備物の確認\n役割分担\n連絡事項 など"
         )
         self.add_item(self.content)
 
@@ -265,7 +275,7 @@ class EventCreateModal(discord.ui.Modal, title="イベント登録"):
 
 
 # ==============================
-# イベント選択用 View
+# イベント選択用プルダウン
 # ==============================
 class EventSelectView(discord.ui.View):
     def __init__(self, pages, mode: str):
@@ -322,7 +332,7 @@ class EventSelectView(discord.ui.View):
 
 
 # ==============================
-# イベント用コグ
+# イベント用コマンド
 # ==============================
 class EventCommands(commands.Cog):
     def __init__(self, bot):
@@ -429,7 +439,6 @@ def get_changes():
     return changes
 
 
-# --- Q&Aユーティリティ ---
 def get_question(page) -> str:
     t = page["properties"]["質問"]["title"]
     return t[0]["plain_text"] if t else "(質問なし)"
@@ -469,11 +478,7 @@ def update_answer(page_id, answer: str) -> bool:
 
 
 def ensure_question_numbers():
-    """
-    質問番号（Number型）を持たないページにだけ、
-    追加順（created_time昇順）で新しい番号を付与する。
-    一度付けた番号は変更しない。
-    """
+    # 質問番号を持たないページにだけ、追加順（created_time昇順）で新しい番号を付与する
     data = fetch_qa_db()
     if not data:
         return
@@ -487,7 +492,7 @@ def ensure_question_numbers():
     ]
     next_num = max(existing_numbers) + 1 if existing_numbers else 1
 
-    # 質問番号がまだ無いページだけ、作成日時昇順で採番
+    # 質問番号がまだ無いページだけ、作成日時昇順で番号割り振り
     missing_pages = [
         p for p in pages if p["properties"]["質問番号"]["number"] is None
     ]
@@ -500,12 +505,13 @@ def ensure_question_numbers():
         requests.patch(url, headers=headers, json=data)
         next_num += 1
 
+    # ログ出力
     if missing_pages:
         print(f"✅ 新たに {len(missing_pages)} 件の質問番号を採番しました。")
 
 
 async def send_qa_notification(bot: commands.Bot, ctype: str, page: dict):
-    """Q&Aの新規/更新通知（未回答のみ対象）"""
+    # Q&Aの新規/更新通知（未回答のみ対象）
     if QA_CHANNEL_ID == 0:
         return
 
@@ -534,10 +540,10 @@ async def send_qa_notification(bot: commands.Bot, ctype: str, page: dict):
 
 
 # ==============================
-# Q&A モーダル & View
+# Q&A モーダル & 質問選択プルダウン
 # ==============================
 class QAnswerModal(discord.ui.Modal):
-    """未回答の質問に新規回答を入力するモーダル"""
+    # 未回答の質問に新規回答を入力するモーダル
 
     def __init__(self, page_id, number, question_text):
         super().__init__(title=f"回答入力（#{number}）")
@@ -565,7 +571,7 @@ class QAnswerModal(discord.ui.Modal):
 
 
 class QEditModal(discord.ui.Modal):
-    """回答済みの質問について、回答を編集するモーダル"""
+    # 回答済みの質問について、回答を編集するモーダル
 
     def __init__(self, page_id, number, question_text, current_answer):
         super().__init__(title=f"回答編集（#{number}）")
@@ -594,7 +600,7 @@ class QEditModal(discord.ui.Modal):
 
 
 class AnswerSelectView(discord.ui.View):
-    """未回答質問用の番号選択ビュー"""
+    # 未回答質問用の番号選択プルダウン
 
     def __init__(self, pages):
         super().__init__(timeout=120)
@@ -630,7 +636,7 @@ class AnswerSelectView(discord.ui.View):
 
 
 class EditSelectView(discord.ui.View):
-    """回答済み質問用の番号選択ビュー"""
+    # 回答済み質問用の番号選択ビュー
 
     def __init__(self, pages):
         super().__init__(timeout=120)
@@ -668,7 +674,7 @@ class EditSelectView(discord.ui.View):
 
 
 # ==============================
-# Q&Aコマンド用コグ
+# Q&Aコマンド用コマンド
 # ==============================
 class QACommands(commands.Cog):
     def __init__(self, bot):
@@ -724,13 +730,13 @@ class QACommands(commands.Cog):
 # ======================================================
 @tasks.loop(hours=24)
 async def auto_clean():
-    """イベントの過去データ削除"""
+    # イベントの過去データ削除（24時間毎）
     delete_past_events()
 
 
 @tasks.loop(hours=6)
 async def auto_check_qa(bot: commands.Bot):
-    """Q&A DBの変更監視（起動直後は通知しない）"""
+    # Q&A DBの変更監視（起動直後は通知しない）（6時間毎）
     global FIRST_QA_RUN
 
     ensure_question_numbers()
