@@ -290,6 +290,9 @@ class EventSelectView(discord.ui.View):
         super().__init__(timeout=120)
         self.mode = mode  # "modify" or "delete"
         self.page_info = {}
+        
+        # 新しい順に並びかえる
+        pages.sort(key=lambda p: p["created_time"], reverse=True)
 
         options = []
         for page in pages[:25]:
