@@ -135,19 +135,27 @@ def notion_delete_event(page_id):
 
 
 def delete_past_events():
-    # 過去の日付のイベントをNotionから削除（Discordメッセージはそのまま）
+    # 過去(24時間前)のイベントをNotionからアーカイブ扱いで削除する
     url = f"https://api.notion.com/v1/databases/{NOTION_EVENT_DB_ID}/query"
     res = requests.post(url, headers=headers, json={}).json()
 
     today = datetime.now(JST).date()
+
     for page in res.get("results", []):
         date_prop = page["properties"]["日時"]["date"]
         if not date_prop:
             continue
+
         dt = datetime.fromisoformat(date_prop["start"]).date()
+
         if dt < today:
-            notion_delete_event(page["id"])
-            print(f"[AUTO DELETE] {page['id']} deleted.")
+            requests.patch(
+                f"https://api.notion.com/v1/pages/{page['id']}",
+                headers=headers,
+                json={"archived": True},
+            )
+            # ログ出力
+            print(f"[AUTO DELETE] {page['id']} をアーカイブ（削除）しました ({dt})")
 
 
 def fetch_event_pages():
@@ -392,7 +400,7 @@ class EventCommands(commands.Cog):
 # Q&A 機能
 # ======================================================
 
-# --- DB 取得・差分管理 ---
+# Q&A DBの取得・差分管理
 def fetch_qa_db():
     url = f"https://api.notion.com/v1/databases/{NOTION_QA_DB_ID}/query"
     res = requests.post(url, headers=headers, json={})
@@ -412,12 +420,17 @@ def load_cache():
         return {}
 
 
-def save_cache(cache):
+def save_cache(cache, first_run_flag=None):
+    # FIRST_QA_RUN のフラグをキャッシュに保存
+    if first_run_flag is not None:
+        cache["_first_qa_run"] = first_run_flag
+
     with open(CACHE_FILE, "w", encoding="utf-8") as f:
         json.dump(cache, f, ensure_ascii=False, indent=2)
 
 
-def get_changes():
+
+def get_qa_changes():
     data = fetch_qa_db()
     if not data:
         return []
@@ -478,7 +491,7 @@ def update_answer(page_id, answer: str) -> bool:
 
 
 def ensure_question_numbers():
-    # 質問番号を持たないページにだけ、追加順（created_time昇順）で新しい番号を付与する
+    # 質問番号を持たないページにだけ、追加順で新しい番号を付与する
     data = fetch_qa_db()
     if not data:
         return
@@ -740,11 +753,16 @@ async def auto_check_qa(bot: commands.Bot):
     global FIRST_QA_RUN
 
     ensure_question_numbers()
-    changes = get_changes()
+    changes = get_qa_changes()
 
     # 起動直後は通知せず、キャッシュ作成だけ行う
     if FIRST_QA_RUN:
         print("Skipping QA notifications on first run.")
+
+        # FIRST_QA_RUN = False をキャッシュへ保存
+        cache = load_cache()
+        save_cache(cache, first_run_flag=False)
+
         FIRST_QA_RUN = False
         return
 
@@ -770,8 +788,17 @@ bot = MyBot(command_prefix="!", intents=intents)
 
 
 @bot.event
+@bot.event
 async def on_ready():
+    global FIRST_QA_RUN
+
     print(f"Bot Ready as {bot.user}")
+
+    # FIRST_QA_RUN をキャッシュから復元
+    cache = load_cache()
+    FIRST_QA_RUN = cache.get("_first_qa_run", True)
+
+    print("FIRST_QA_RUN =", FIRST_QA_RUN)
 
     ensure_question_numbers()
 
