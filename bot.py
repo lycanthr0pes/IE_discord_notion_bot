@@ -328,16 +328,16 @@ class EventCommands(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-        @app_commands.command(name="event", description="イベントを登録します")
-        async def event(self, interaction: discord.Interaction):
-            if not is_event_channel(interaction):
-                return await interaction.response.send_message(
-                    f"❌ このコマンドは <#{EVENT_CHANNEL_ID}> のみ実行できます。",
-                    ephemeral=True,
-                )
+    @app_commands.command(name="event", description="イベントを登録します")
+    async def event(self, interaction: discord.Interaction):
+        if not is_event_channel(interaction):
+            return await interaction.response.send_message(
+                f"❌ このコマンドは <#{EVENT_CHANNEL_ID}> のみ実行できます。",
+                ephemeral=True,
+            )
 
-            # 入力欄つきモーダルを表示する
-            await interaction.response.send_modal(EventCreateModal())
+        # 入力欄つきモーダルを表示する
+        await interaction.response.send_modal(EventCreateModal())
 
     @app_commands.command(name="event_modify", description="イベント名から編集するイベントを選択します")
     async def event_modify(self, interaction: discord.Interaction):
