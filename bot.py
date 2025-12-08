@@ -636,7 +636,7 @@ class AnswerSelectView(discord.ui.View):
 
 
 class EditSelectView(discord.ui.View):
-    # 回答済み質問用の番号選択ビュー
+    # 回答済み質問用の番号選択プルダウン
 
     def __init__(self, pages):
         super().__init__(timeout=120)
@@ -736,7 +736,7 @@ async def auto_clean():
 
 @tasks.loop(hours=6)
 async def auto_check_qa(bot: commands.Bot):
-    # Q&A DBの変更監視（起動直後は通知しない）（6時間毎）
+    # Q&A DBの変更監視（6時間毎）
     global FIRST_QA_RUN
 
     ensure_question_numbers()
