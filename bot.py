@@ -20,7 +20,6 @@ NOTION_QA_DB_ID = os.getenv("NOTION_QA_ID")
 NOTION_EVENT_DB_ID = os.getenv("NOTION_EVENT_ID")
 
 # チャンネル紐付け
-EVENT_CHANNEL_ID = int(os.getenv("EVENT_CHANNEL_ID", 0))
 QA_CHANNEL_ID = int(os.getenv("QA_CHANNEL_ID", 0))
 
 # ==============================
@@ -41,10 +40,6 @@ FIRST_QA_RUN = True
 # ==============================
 # チャンネル制限
 # ==============================
-def is_event_channel(interaction: discord.Interaction) -> bool:
-    return EVENT_CHANNEL_ID == 0 or interaction.channel_id == EVENT_CHANNEL_ID
-
-
 def is_qa_channel(interaction: discord.Interaction) -> bool:
     return QA_CHANNEL_ID == 0 or interaction.channel_id == QA_CHANNEL_ID
 
@@ -62,19 +57,19 @@ def format_display_date(date_iso: str) -> str:
     except Exception:
         return dt.strftime(f"%-m月%-d日（{w}） %H:%M")  # Linux/Mac
 
-# 入力された日付と時刻をISO形式に変換（Notion用）
-def normalize_date(date_str: str, time_str: str) -> str:
-    dt = datetime.strptime(f"{date_str} {time_str}", "%Y/%m/%d %H:%M")
-    dt = dt.replace(tzinfo=JST)
-    return dt.isoformat()
+
+# Discord ScheduledEvent 用：datetime → ISO(JST)
+def to_jst_iso(dt: datetime) -> str:
+    return dt.astimezone(JST).isoformat()
 
 
 # ======================================================
-# イベント管理機能
+# イベント管理機能（Notion 側）
 # ======================================================
 
 # イベントをNotionに新規作成（jsonを作成し送信）
 def notion_add_event(name, content, date_iso, message_id, creator_id):
+    # message_idにDiscordのイベントIDを入れる
     url = "https://api.notion.com/v1/pages"
     data = {
         "parent": {"database_id": NOTION_EVENT_DB_ID},
@@ -82,7 +77,9 @@ def notion_add_event(name, content, date_iso, message_id, creator_id):
             "イベント名": {"title": [{"text": {"content": name}}]},
             "内容": {"rich_text": [{"text": {"content": content}}]},
             "日時": {"date": {"start": date_iso}},
-            "メッセージID": {"rich_text": [{"text": {"content": str(message_id)}}]},
+            "メッセージID": {  # = Discord イベントID
+                "rich_text": [{"text": {"content": str(message_id)}}]
+            },
             "作成者ID": {"rich_text": [{"text": {"content": str(creator_id)}}]},
             "ページID": {"rich_text": [{"text": {"content": ""}}]},
         },
@@ -92,11 +89,12 @@ def notion_add_event(name, content, date_iso, message_id, creator_id):
         # ログ出力
         print("❌ Notion作成エラー:", res.text)
         return None
-    
+
     # ページIDを追加
     page_id = res.json()["id"]
     notion_update_event(page_id, page_uuid=page_id)
     return page_id
+
 
 # Notion APIを使ってNotion上のイベントを取得し、JSONデータを返す
 def notion_get_event(page_id):
@@ -104,8 +102,11 @@ def notion_get_event(page_id):
     data = res.json()
     return data if "id" in data else None
 
+
 # 指定されたNotionイベントのプロパティを更新する
-def notion_update_event(page_id, name=None, content=None, date_iso=None, message_id=None, page_uuid=None):
+def notion_update_event(
+    page_id, name=None, content=None, date_iso=None, message_id=None, page_uuid=None
+):
     props = {}
     if name is not None:
         props["イベント名"] = {"title": [{"text": {"content": name}}]}
@@ -114,12 +115,19 @@ def notion_update_event(page_id, name=None, content=None, date_iso=None, message
     if date_iso is not None:
         props["日時"] = {"date": {"start": date_iso}}
     if message_id is not None:
-        props["メッセージID"] = {"rich_text": [{"text": {"content": str(message_id)}}]}
+        props["メッセージID"] = {
+            "rich_text": [{"text": {"content": str(message_id)}}]
+        }
     if page_uuid is not None:
         props["ページID"] = {"rich_text": [{"text": {"content": str(page_uuid)}}]}
 
-    res = requests.patch(f"https://api.notion.com/v1/pages/{page_id}", headers=headers, json={"properties": props})
+    res = requests.patch(
+        f"https://api.notion.com/v1/pages/{page_id}",
+        headers=headers,
+        json={"properties": props},
+    )
     return res.status_code in (200, 201)
+
 
 # イベントをNotionからアーカイブ扱いで削除する
 def notion_delete_event(page_id):
@@ -135,13 +143,14 @@ def notion_delete_event(page_id):
 
     return True
 
-# 過去(24時間前)のイベントをNotionからアーカイブ扱いで削除する
+
+# 過去(当日より前)のイベントをNotionからアーカイブ扱いで削除する
 def delete_past_events():
     # クエリを送って全イベントを取得（json）
     url = f"https://api.notion.com/v1/databases/{NOTION_EVENT_DB_ID}/query"
     res = requests.post(url, headers=headers, json={}).json()
 
-    # 日付(日本時間)を取得 
+    # 日付(日本時間)を取得
     today = datetime.now(JST).date()
 
     # jsonから各イベントの日時プロパティを確認
@@ -150,7 +159,7 @@ def delete_past_events():
         if not date_prop:
             continue
 
-    # 日付(ISO形式)をdatetimeに変換する(startは日時プロパティの開始日時)
+        # 日付(ISO形式)をdatetimeに変換する(startは日時プロパティの開始日時)
         dt = datetime.fromisoformat(date_prop["start"]).date()
 
         # 今日より前なら削除
@@ -163,6 +172,7 @@ def delete_past_events():
             # ログ出力
             print(f"[AUTO DELETE] {page['id']} をアーカイブ（削除）しました ({dt})")
 
+
 # クエリを送って全イベントを取得（json）
 def fetch_event_pages():
     url = f"https://api.notion.com/v1/databases/{NOTION_EVENT_DB_ID}/query"
@@ -172,263 +182,6 @@ def fetch_event_pages():
         print("❌ イベント一覧取得失敗:", res.text)
         return []
     return res.json().get("results", [])
-
-
-# ==============================
-# モーダル（イベント編集・作成）
-# ==============================
-# イベント編集
-class EventEditModal(discord.ui.Modal, title="イベント編集"):
-    def __init__(self, page, message_id):
-        super().__init__()
-        # ページID(Notion)とメッセージID(Discord)を保持
-        self.page_id = page["id"]
-        self.message_id = message_id
-
-        # Notionのプロパティを取り出す
-        props = page["properties"]
-        name_val = props["イベント名"]["title"][0]["text"]["content"]
-        content_val = props["内容"]["rich_text"][0]["text"]["content"] if props["内容"]["rich_text"] else ""
-        
-        # 日付(ISO)をdatetimeに
-        iso = props["日時"]["date"]["start"]
-        dt = datetime.fromisoformat(iso)
-
-        # モーダル項目を生成
-        self.name = discord.ui.TextInput(label="イベント名", default=name_val)
-        self.date = discord.ui.TextInput(label="日付（例:2025/1/1）", default=f"{dt.year}/{dt.month}/{dt.day}")
-        self.time = discord.ui.TextInput(label="時刻（例:13:00）", default=f"{dt.hour:02d}:{dt.minute:02d}")
-        self.content = discord.ui.TextInput(label="内容", style=discord.TextStyle.paragraph, default=content_val)
-
-        # 生成した項目を追加
-        self.add_item(self.name)
-        self.add_item(self.date)
-        self.add_item(self.time)
-        self.add_item(self.content)
-    
-    # 送信後の処理
-    async def on_submit(self, interaction: discord.Interaction):
-        # チャンネル制限のチェック
-        if not is_event_channel(interaction):
-            return await interaction.response.send_message(
-                f"❌ この操作は <#{EVENT_CHANNEL_ID}> のみで可能です。",
-                ephemeral=True,
-            )
-
-        # 入力された日付をISOにして、Notion側のイベントを更新
-        # 入力バリデーション
-        try:
-            date_iso = normalize_date(...)
-        except ValueError:
-            return await interaction.response.send_message("❌ 日付または時刻の形式が不正です", ephemeral=True)
-        
-        ok = notion_update_event(self.page_id, self.name.value, self.content.value, date_iso)
-        if not ok:
-            return await interaction.response.send_message("❌ Notion 更新に失敗しました", ephemeral=True)
-
-        # Discord側を更新
-        embed = discord.Embed(title=f"📌 {self.name.value}", color=0x55FF55)
-        embed.add_field(name="日時", value=format_display_date(date_iso), inline=False)
-        embed.add_field(name="内容", value=self.content.value, inline=False)
-
-        msg = await interaction.channel.fetch_message(int(self.message_id))
-        await msg.edit(embed=embed)
-
-        await interaction.response.send_message("✏️ 更新しました", ephemeral=True)
-
-
-class EventCreateModal(discord.ui.Modal, title="イベント登録"):
-    def __init__(self):
-        super().__init__()
-
-        # イベント名
-        self.name = discord.ui.TextInput(
-            label="イベント名",
-            required=True
-        )
-        self.add_item(self.name)
-
-        # 日付
-        self.date = discord.ui.TextInput(
-            label="日付（YYYY/M/D）",
-            placeholder="例：2025/1/1",
-            required=True
-        )
-        self.add_item(self.date)
-
-        # 時刻
-        self.time = discord.ui.TextInput(
-            label="時刻（HH:MM）",
-            placeholder="例：13:00",
-            required=True
-        )
-        self.add_item(self.time)
-
-        # 内容
-        self.content = discord.ui.TextInput(
-            label="内容",
-            style=discord.TextStyle.paragraph,
-            required=False,
-        )
-        self.add_item(self.content)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        # 入力取得
-        name = self.name.value
-        date = self.date.value
-        time = self.time.value
-        content = self.content.value or "(内容なし)"
-
-        # 入力バリデーション
-        if not re.match(r"^\d{4}/\d{1,2}/\d{1,2}$", date):
-            return await interaction.response.send_message(
-                "❌ 日付形式が不正です（例：2025/1/1）", ephemeral=True
-            )
-
-        if not re.match(r"^\d{1,2}:\d{2}$", time):
-            return await interaction.response.send_message(
-                "❌ 時刻形式が不正です（例：13:00）", ephemeral=True
-            )
-
-        date_iso = normalize_date(date, time)
-
-        # Discord メッセージ作成
-        embed = discord.Embed(title=f"📌 {name}", color=0x00AAFF)
-        embed.add_field(name="日時", value=format_display_date(date_iso), inline=False)
-        embed.add_field(name="内容", value=content, inline=False)
-
-        await interaction.response.send_message(embed=embed)
-        msg = await interaction.original_response()
-
-        # Notionに保存
-        notion_add_event(name, content, date_iso, msg.id, interaction.user.id)
-
-
-# ==============================
-# イベント選択用プルダウン
-# ==============================
-class EventSelectView(discord.ui.View):
-    def __init__(self, pages, mode: str):
-        super().__init__(timeout=120) #120秒タイムアウト
-        self.mode = mode  # "modify" or "delete"
-        self.page_info = {} #選択したページを保持
-        
-        # 新しい順に並びかえる
-        pages.sort(key=lambda p: p["created_time"], reverse=True)
-
-        options = []
-        for page in pages[:25]: #Discordのプルダウンメニューは25個まで
-            pid = page["id"]
-            name = page["properties"]["イベント名"]["title"][0]["text"]["content"]
-            self.page_info[pid] = page
-            options.append(discord.SelectOption(label=name, value=pid)) # 各選択肢にイベントのIDを登録
-        
-        # セレクトメニュー本体
-        select = discord.ui.Select(
-            placeholder="イベント名を選択してください",
-            options=options,
-            min_values=1,
-            max_values=1,
-        )
-        # UIにセレクトメニュー組み込み
-        select.callback = self.on_select
-        self.add_item(select)
-
-    async def on_select(self, interaction: discord.Interaction):
-        # ページIDを取得
-        pid = interaction.data["values"][0]
-        page = self.page_info[pid]
-
-        # 作成者 or 管理者のみ操作可能(作成者IDで判定)
-        creator_id = page["properties"]["作成者ID"]["rich_text"][0]["text"]["content"]
-        is_creator = str(interaction.user.id) == creator_id
-        is_admin = interaction.user.guild_permissions.manage_guild
-        if not (is_creator or is_admin):
-            return await interaction.response.send_message(
-                "❌ 編集・削除できるのは作成者本人または管理者のみです。",
-                ephemeral=True,
-            )
-
-        # Discord メッセージIDを Notion から取り出す
-        msg_id = page["properties"]["メッセージID"]["rich_text"][0]["text"]["content"]
-
-        if self.mode == "modify":
-            # 編集モーダルを表示
-            await interaction.response.send_modal(EventEditModal(page, msg_id))
-        elif self.mode == "delete":
-            # Discordメッセージ削除
-            try:
-                message = await interaction.channel.fetch_message(int(msg_id))
-                await message.delete()
-            except Exception:
-                pass
-
-            # Notionページ削除
-            notion_delete_event(pid)
-
-            await interaction.response.send_message("🗑️ イベントを削除しました。", ephemeral=True)
-
-
-# ==============================
-# イベント用コマンド
-# ==============================
-class EventCommands(commands.Cog):
-    def __init__(self, bot):
-        self.bot = bot
-    
-    # 登録コマンドを定義
-    @app_commands.command(name="event", description="イベントを登録します")
-    async def event(self, interaction: discord.Interaction):
-        if not is_event_channel(interaction):
-            return await interaction.response.send_message(
-                f"❌ このコマンドは <#{EVENT_CHANNEL_ID}> のみ実行できます。",
-                ephemeral=True,
-            )
-
-        # 入力欄つきモーダルを表示する
-        await interaction.response.send_modal(EventCreateModal())
-
-    # 編集コマンドを定義
-    @app_commands.command(name="event_modify", description="イベント名から編集するイベントを選択します")
-    async def event_modify(self, interaction: discord.Interaction):
-        if not is_event_channel(interaction):
-            return await interaction.response.send_message(
-                f"❌ このコマンドは <#{EVENT_CHANNEL_ID}> でのみ利用できます。",
-                ephemeral=True,
-            )
-
-        # イベント一覧取得
-        pages = fetch_event_pages()
-        if not pages:
-            return await interaction.response.send_message("イベントがありません。", ephemeral=True)
-        
-        view = EventSelectView(pages, mode="modify")
-        await interaction.response.send_message(
-            "編集するイベントを選択してください。",
-            view=view,
-            ephemeral=True,
-        )
-
-    # 削除コマンドを定義
-    @app_commands.command(name="event_delete", description="イベント名から削除するイベントを選択します")
-    async def event_delete(self, interaction: discord.Interaction):
-        if not is_event_channel(interaction):
-            return await interaction.response.send_message(
-                f"❌ このコマンドは <#{EVENT_CHANNEL_ID}> でのみ利用できます。",
-                ephemeral=True,
-            )
-        
-        # イベント一覧取得
-        pages = fetch_event_pages()
-        if not pages:
-            return await interaction.response.send_message("イベントがありません。", ephemeral=True)
-
-        view = EventSelectView(pages, mode="delete")
-        await interaction.response.send_message(
-            "削除するイベントを選択してください。",
-            view=view,
-            ephemeral=True,
-        )
 
 
 # ======================================================
@@ -816,17 +569,18 @@ async def auto_check_qa(bot: commands.Bot):
 class MyBot(commands.Bot):
     # コマンド登録
     async def setup_hook(self):
-        await self.add_cog(EventCommands(self))
         await self.add_cog(QACommands(self))
         await self.tree.sync()
         print("Slash commands synced")
 
 
 intents = discord.Intents.default()
+# Discordのイベント機能を使うためのインテント
+intents.guild_scheduled_events = True
+
 bot = MyBot(command_prefix="!", intents=intents)
 
 
-@bot.event
 @bot.event
 async def on_ready():
     global FIRST_QA_RUN
@@ -848,6 +602,104 @@ async def on_ready():
         auto_check_qa.start(bot)
 
     print("All background tasks started.")
+
+
+# ======================================================
+# Discordイベント機能 → Notion同期部分
+# ======================================================
+
+@bot.event
+async def on_scheduled_event_create(event):
+    """
+    Discord のサーバーイベントが作成されたときに呼ばれる
+    ここで Notion のイベントDBに登録する
+    """
+    name = event.name
+    description = event.description or "(内容なし)"
+    start_iso = to_jst_iso(event.start_time)
+    creator_id = (
+        event.creator_id
+        or (event.creator.id if event.creator else "unknown")
+    )
+
+    notion_add_event(
+        name=name,
+        content=description,
+        date_iso=start_iso,
+        message_id=event.id,  # メッセージID枠にイベントIDを保存
+        creator_id=creator_id,
+    )
+
+    print(f"🆕 Discordイベント作成 → Notion登録: {name}")
+
+
+@bot.event
+async def on_scheduled_event_update(before, after):
+    """
+    Discord イベントが更新されたときに呼ばれる
+    Notion 側で「メッセージID == after.id」のページを探して更新
+    """
+    pages = fetch_event_pages()
+    target = None
+    after_id_str = str(after.id)
+
+    for page in pages:
+        prop = page["properties"].get("メッセージID", {}).get("rich_text", [])
+        if not prop:
+            continue
+        mid = prop[0]["text"]["content"]
+        if mid == after_id_str:
+            target = page
+            break
+
+    if not target:
+        print("⚠️ Notion 側に対応するイベントページが見つかりません。")
+        return
+
+    page_id = target["id"]
+    new_name = after.name
+    new_content = after.description or "(内容なし)"
+    new_date_iso = to_jst_iso(after.start_time)
+
+    ok = notion_update_event(
+        page_id,
+        name=new_name,
+        content=new_content,
+        date_iso=new_date_iso,
+    )
+    if ok:
+        print(f"✏️ Discordイベント更新 → Notion更新: {new_name}")
+    else:
+        print("❌ Notion イベント更新に失敗しました。")
+
+
+@bot.event
+async def on_scheduled_event_delete(event):
+    """
+    Discord イベントが削除されたときに呼ばれる
+    Notion 側の対応するページをアーカイブ
+    """
+    pages = fetch_event_pages()
+    target_id = None
+    eid = str(event.id)
+
+    for page in pages:
+        prop = page["properties"].get("メッセージID", {}).get("rich_text", [])
+        if not prop:
+            continue
+        mid = prop[0]["text"]["content"]
+        if mid == eid:
+            target_id = page["id"]
+            break
+
+    if not target_id:
+        print("⚠️ 削除対象の Notion イベントが見つかりません。")
+        return
+
+    if notion_delete_event(target_id):
+        print(f"🗑️ Discordイベント削除 → Notionイベント削除: {event.name}")
+    else:
+        print("❌ Notion イベント削除に失敗しました。")
 
 
 # ===============================
