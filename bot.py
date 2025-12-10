@@ -163,7 +163,7 @@ def delete_past_events():
         dt = datetime.fromisoformat(date_prop["start"]).date()
 
         # 今日より31日前なら削除
-        if today - dt > 30:
+        if today.day - dt.day > 30:
             requests.patch(
                 f"https://api.notion.com/v1/pages/{page['id']}",
                 headers=headers,
