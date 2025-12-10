@@ -162,8 +162,8 @@ def delete_past_events():
         # 日付(ISO形式)をdatetimeに変換する(startは日時プロパティの開始日時)
         dt = datetime.fromisoformat(date_prop["start"]).date()
 
-        # 今日より前なら削除
-        if dt < today:
+        # 今日より31日前なら削除
+        if today - dt > 30:
             requests.patch(
                 f"https://api.notion.com/v1/pages/{page['id']}",
                 headers=headers,
@@ -182,6 +182,10 @@ def fetch_event_pages():
         print("❌ イベント一覧取得失敗:", res.text)
         return []
     return res.json().get("results", [])
+
+# イベント名が除外ワード("定例会")を含むかどうか
+def is_ignored_event(name: str) -> bool:
+    return "定例会" in name
 
 
 # ======================================================
@@ -614,6 +618,11 @@ async def on_scheduled_event_create(event):
     Discord のサーバーイベントが作成されたときに呼ばれる
     ここで Notion のイベントDBに登録する
     """
+    # 除外ワードを含むイベントは無視
+    if is_ignored_event(event.name):
+        print(f"⚠️ 除外イベントのため登録しません: {event.name}")
+        return
+    
     name = event.name
     description = event.description or "(内容なし)"
     start_iso = to_jst_iso(event.start_time)
@@ -639,6 +648,11 @@ async def on_scheduled_event_update(before, after):
     Discord イベントが更新されたときに呼ばれる
     Notion 側で「メッセージID == after.id」のページを探して更新
     """
+    # 除外ワードを含むイベントは無視
+    if is_ignored_event(after.name):
+        print(f"⚠️ 除外イベントのため更新しません: {after.name}")
+        return
+    
     pages = fetch_event_pages()
     target = None
     after_id_str = str(after.id)
@@ -679,6 +693,11 @@ async def on_scheduled_event_delete(event):
     Discord イベントが削除されたときに呼ばれる
     Notion 側の対応するページをアーカイブ
     """
+    # 除外ワードを含むイベントは無視
+    if is_ignored_event(event.name):
+        print(f"⚠️ 除外イベントの削除は無視します: {event.name}")
+        return
+    
     pages = fetch_event_pages()
     target_id = None
     eid = str(event.id)
