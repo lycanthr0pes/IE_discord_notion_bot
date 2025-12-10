@@ -565,7 +565,7 @@ async def send_qa_notification(bot: commands.Bot, ctype: str, page: dict):
 
     ch = await bot.fetch_channel(QA_CHANNEL_ID)
 
-    number = page["properties"]["質問番号"]["formula"]["number"]
+    number = page["properties"]["質問番号"]["number"]
     number_display = number if number is not None else "?"
 
     q = get_question(page)
@@ -657,7 +657,7 @@ class AnswerSelectView(discord.ui.View):
         options = []
         for page in pages[:25]:
             pid = page["id"]
-            number = page["properties"]["質問番号"]["formula"]["number"]
+            number = page["properties"]["質問番号"]["number"]
             q = get_question(page)
 
             self.page_info[pid] = {"number": number, "question": q}
@@ -693,7 +693,7 @@ class EditSelectView(discord.ui.View):
         options = []
         for page in pages[:25]:
             pid = page["id"]
-            number = page["properties"]["質問番号"]["formula"]["number"]
+            number = page["properties"]["質問番号"]["number"]
             q = get_question(page)
             a = get_answer(page)
 
