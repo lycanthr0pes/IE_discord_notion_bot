@@ -525,6 +525,39 @@ def update_answer(page_id, answer: str) -> bool:
     return requests.patch(url, headers=headers, json=data).status_code == 200
 
 
+def ensure_question_numbers():
+    # 質問番号を持たないページにだけ、追加順で新しい番号を付与する
+    data = fetch_qa_db()
+    if not data:
+        return
+
+    pages = data.get("results", [])
+
+    existing_numbers = [
+        p["properties"]["質問番号"]["number"]
+        for p in pages
+        if p["properties"]["質問番号"]["number"] is not None
+    ]
+    next_num = max(existing_numbers) + 1 if existing_numbers else 1
+
+    # 質問番号がまだ無いページだけ、作成日時昇順で番号割り振り
+    missing_pages = [
+        p for p in pages if p["properties"]["質問番号"]["number"] is None
+    ]
+    missing_pages.sort(key=lambda p: p.get("created_time", ""))
+
+    for page in missing_pages:
+        page_id = page["id"]
+        url = f"https://api.notion.com/v1/pages/{page_id}"
+        data = {"properties": {"質問番号": {"number": next_num}}}
+        requests.patch(url, headers=headers, json=data)
+        next_num += 1
+
+    # ログ出力
+    if missing_pages:
+        print(f"✅ 新たに {len(missing_pages)} 件の質問番号を採番しました。")
+
+
 async def send_qa_notification(bot: commands.Bot, ctype: str, page: dict):
     # Q&Aの新規/更新通知（未回答のみ対象）
     if QA_CHANNEL_ID == 0:
@@ -532,7 +565,7 @@ async def send_qa_notification(bot: commands.Bot, ctype: str, page: dict):
 
     ch = await bot.fetch_channel(QA_CHANNEL_ID)
 
-    number = page["properties"]["質問番号"]["number"]
+    number = page["properties"]["質問番号"]["formula"]["number"]
     number_display = number if number is not None else "?"
 
     q = get_question(page)
@@ -624,7 +657,7 @@ class AnswerSelectView(discord.ui.View):
         options = []
         for page in pages[:25]:
             pid = page["id"]
-            number = page["properties"]["質問番号"]["number"]
+            number = page["properties"]["質問番号"]["formula"]["number"]
             q = get_question(page)
 
             self.page_info[pid] = {"number": number, "question": q}
@@ -660,7 +693,7 @@ class EditSelectView(discord.ui.View):
         options = []
         for page in pages[:25]:
             pid = page["id"]
-            number = page["properties"]["質問番号"]["number"]
+            number = page["properties"]["質問番号"]["formula"]["number"]
             q = get_question(page)
             a = get_answer(page)
 
@@ -703,7 +736,9 @@ class QACommands(commands.Cog):
                 f"❌ このコマンドは <#{QA_CHANNEL_ID}> でのみ実行できます。",
                 ephemeral=True,
             )
-
+        
+        # Bot側で自動連番
+        ensure_question_numbers()
         pages = fetch_unanswered() # 未回答ページ取得
         if not pages:
             return await interaction.response.send_message(
@@ -725,7 +760,8 @@ class QACommands(commands.Cog):
                 f"❌ このコマンドは <#{QA_CHANNEL_ID}> でのみ実行できます。",
                 ephemeral=True,
             )
-
+        # Bot側で自動連番
+        ensure_question_numbers()
         pages = fetch_answered() # 未回答ページ取得
         if not pages:
             return await interaction.response.send_message(
@@ -754,6 +790,7 @@ async def auto_check_qa(bot: commands.Bot):
     # Q&A DBの変更監視（6時間毎）
     global FIRST_QA_RUN
 
+    ensure_question_numbers()
     changes = get_qa_changes()
 
     # 起動直後は通知せず、キャッシュ作成だけ行う
@@ -801,6 +838,8 @@ async def on_ready():
     FIRST_QA_RUN = cache.get("_first_qa_run", True)
 
     print("FIRST_QA_RUN =", FIRST_QA_RUN)
+
+    ensure_question_numbers()
 
     if not auto_clean.is_running():
         auto_clean.start()
