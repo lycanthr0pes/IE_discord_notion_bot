@@ -344,6 +344,24 @@ async def send_qa_notification(bot: commands.Bot, ctype: str, page: dict):
     await ch.send(msg)
 
 
+async def send_qa_ephemeral(
+    interaction: discord.Interaction,
+    number,
+    question: str,
+    answer: str,
+    action: str,
+):
+    # 指定チャンネル内で、回答者本人にのみ見える形で再送
+    number_display = number if number is not None else "?"
+    msg = (
+        f"📩 **{action}（#{number_display}）**\n"
+        f"**質問:** {question}\n"
+        f"**回答:** {answer}"
+    )
+    # on_submitでは既にresponseを使っているためfollowupで送信
+    await interaction.followup.send(msg, ephemeral=True)
+
+
 # ==============================
 # Q&A モーダル & 質問選択プルダウン
 # ==============================
@@ -354,6 +372,8 @@ class QAnswerModal(discord.ui.Modal):
         super().__init__(title=f"回答入力（#{number}）")
         self.page_id = page_id
         self.number = number
+        # DMで再送するために質問文を保持しておく
+        self.question_text = question_text
 
         self.answer = discord.ui.TextInput(
             label=f"質問: {question_text}",
@@ -362,11 +382,20 @@ class QAnswerModal(discord.ui.Modal):
         self.add_item(self.answer)
 
     async def on_submit(self, interaction: discord.Interaction):
+        # Notionに回答を書き込み、成功時のみ回答者へDM再送
         ok = update_answer(self.page_id, self.answer.value)
         if ok:
             await interaction.response.send_message(
                 f"✅ 回答を保存しました。（#{self.number}）",
                 ephemeral=True,
+            )
+            # 指定チャンネルで本人にのみ見える形で再送
+            await send_qa_ephemeral(
+                interaction,
+                self.number,
+                self.question_text,
+                self.answer.value, # 回答を取得
+                "回答を保存しました", # アクション内容
             )
         else:
             await interaction.response.send_message(
@@ -382,6 +411,8 @@ class QEditModal(discord.ui.Modal):
         super().__init__(title=f"回答編集（#{number}）")
         self.page_id = page_id
         self.number = number
+        # DMで再送するために質問文を保持しておく
+        self.question_text = question_text
 
         self.answer = discord.ui.TextInput(
             label=f"質問: {question_text}",
@@ -391,11 +422,20 @@ class QEditModal(discord.ui.Modal):
         self.add_item(self.answer)
 
     async def on_submit(self, interaction: discord.Interaction):
+        # 既存回答を更新し、成功時は回答者へDM再送
         ok = update_answer(self.page_id, self.answer.value)
         if ok:
             await interaction.response.send_message(
                 f"✅ 回答を更新しました。（#{self.number}）",
                 ephemeral=True,
+            )
+            # 指定チャンネルで本人にのみ見える形で再送
+            await send_qa_ephemeral(
+                interaction,
+                self.number,
+                self.question_text,
+                self.answer.value, # 回答内容を取得
+                "回答を更新しました", # アクション内容
             )
         else:
             await interaction.response.send_message(
@@ -426,10 +466,12 @@ class AnswerSelectView(discord.ui.View):
             min_values=1,
             max_values=1,
         )
+        # Selectの選択時に呼ばれるコールバック関数を紐づける
         select.callback = self.on_select
         self.add_item(select)
 
     async def on_select(self, interaction: discord.Interaction):
+        # interaction.data にはSelectの選択結果が入る（max_values=1なので先頭）
         pid = interaction.data["values"][0]
         info = self.page_info[pid]
         number = info["number"]
@@ -455,18 +497,20 @@ class EditSelectView(discord.ui.View):
             a = get_answer(page)
 
             self.page_info[pid] = {"number": number, "question": q, "answer": a}
-            options.append(discord.SelectOption(label=f"#{number}", value=pid))
-
+            options.append(discord.SelectOption(label=f"#{number}", value=pid)) # ラベルはプルダウンの表示名
+        # このインタラクションのinteraction.dataにSelectの選択結果が入る
         select = discord.ui.Select(
             placeholder="編集する質問番号を選択してください",
-            options=options,
-            min_values=1,
-            max_values=1,
+            options=options, # ラベルからvalueを選択し["values"]に格納
+            min_values=1, # 一つのみ選択
+            max_values=1, # 一つのみ選択
         )
+        # Selectの選択時に呼ばれるコールバック関数を紐づける
         select.callback = self.on_select
         self.add_item(select)
 
     async def on_select(self, interaction: discord.Interaction):
+        # max_values=1なので先頭
         pid = interaction.data["values"][0]
         info = self.page_info[pid]
         number = info["number"]
