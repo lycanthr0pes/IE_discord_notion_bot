@@ -2,6 +2,8 @@ import os
 import re
 import json
 import requests
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
@@ -16,8 +18,16 @@ NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 # Q&A 用（質問 / 回答 / 質問番号）
 NOTION_QA_DB_ID = os.getenv("NOTION_QA_ID")
 
-# イベント用（イベント名 / 内容 / 日時 / メッセージID / 作成者ID / ページID）
-NOTION_EVENT_DB_ID = os.getenv("NOTION_EVENT_ID")
+# イベント用（外部用: イベント名 / 内容 / 日時 / メッセージID / 作成者ID / ページID）
+NOTION_EVENT_EXTERNAL_DB_ID = os.getenv("NOTION_EVENT_ID")
+
+# イベント用（内部用: イベント名 / 内容 / 日時 / メッセージID / 作成者ID / ページID / イベントURL）
+NOTION_EVENT_INTERNAL_DB_ID = os.getenv("NOTION_EVENT_INTERNAL_ID")
+
+# Googleカレンダー連携
+GOOGLE_CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID")
+GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+GOOGLE_SERVICE_ACCOUNT_JSON_PATH = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_PATH")
 
 # チャンネル紐付け
 QA_CHANNEL_ID = int(os.getenv("QA_CHANNEL_ID", 0))
@@ -63,16 +73,78 @@ def to_jst_iso(dt: datetime) -> str:
     return dt.astimezone(JST).isoformat()
 
 
+GOOGLE_SCOPES = ["https://www.googleapis.com/auth/calendar"]
+_google_service = None
+
+def load_service_account_info():
+    # JSON文字列またはJSONファイルからサービスアカウント情報を取得
+    json_env = GOOGLE_SERVICE_ACCOUNT_JSON
+    if json_env:
+        if os.path.exists(json_env):
+            with open(json_env, "r", encoding="utf-8") as f:
+                return json.load(f)
+        try:
+            return json.loads(json_env)
+        except json.JSONDecodeError:
+            return None
+
+    if GOOGLE_SERVICE_ACCOUNT_JSON_PATH and os.path.exists(GOOGLE_SERVICE_ACCOUNT_JSON_PATH):
+        with open(GOOGLE_SERVICE_ACCOUNT_JSON_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return None
+
+def get_google_calendar_service():
+    # Google Calendar APIクライアントを遅延初期化して再利用
+    global _google_service
+    if _google_service is not None:
+        return _google_service
+    if not GOOGLE_CALENDAR_ID:
+        return None
+    info = load_service_account_info()
+    if not info:
+        return None
+    creds = service_account.Credentials.from_service_account_info(info, scopes=GOOGLE_SCOPES)
+    _google_service = build("calendar", "v3", credentials=creds, cache_discovery=False)
+    return _google_service
+
+def google_add_event(name, description, start_dt, end_dt):
+    # DiscordイベントをGoogleカレンダーへ追加
+    service = get_google_calendar_service()
+    if not service:
+        return None
+    start_iso = to_jst_iso(start_dt)
+    end_iso = to_jst_iso(end_dt)
+    body = {
+        "summary": name,
+        "description": description,
+        "start": {"dateTime": start_iso, "timeZone": "Asia/Tokyo"},
+        "end": {"dateTime": end_iso, "timeZone": "Asia/Tokyo"},
+    }
+    try:
+        return (
+            service.events()
+            .insert(calendarId=GOOGLE_CALENDAR_ID, body=body)
+            .execute()
+        )
+    except Exception as exc:
+        print("❌ Googleカレンダー追加失敗:", exc)
+        return None
+
+
 # ======================================================
 # イベント管理機能（Notion 側）
 # ======================================================
 
 # イベントをNotionに新規作成（jsonを作成し送信）
-def notion_add_event(name, content, date_iso, message_id, creator_id):
+def notion_add_event(
+    db_id, name, content, date_iso, message_id, creator_id, event_url=None, google_event_id=None
+):
     # message_idにDiscordのイベントIDを入れる
+    if not db_id:
+        return None
     url = "https://api.notion.com/v1/pages"
     data = {
-        "parent": {"database_id": NOTION_EVENT_DB_ID},
+        "parent": {"database_id": db_id},
         "properties": {
             "イベント名": {"title": [{"text": {"content": name}}]},
             "内容": {"rich_text": [{"text": {"content": content}}]},
@@ -84,6 +156,14 @@ def notion_add_event(name, content, date_iso, message_id, creator_id):
             "ページID": {"rich_text": [{"text": {"content": ""}}]},
         },
     }
+    # 内部用DBではイベントURLも保存する（NotionのURLプロパティ）
+    if event_url is not None:
+        data["properties"]["イベントURL"] = {"url": event_url}
+    if google_event_id is not None:
+        # GoogleイベントIDで相互参照できるように保存
+        data["properties"]["GoogleイベントID"] = {
+            "rich_text": [{"text": {"content": str(google_event_id)}}]
+        }
     res = requests.post(url, headers=headers, json=data)
     if res.status_code not in (200, 201):
         # ログ出力
@@ -105,7 +185,14 @@ def notion_get_event(page_id):
 
 # 指定されたNotionイベントのプロパティを更新する
 def notion_update_event(
-    page_id, name=None, content=None, date_iso=None, message_id=None, page_uuid=None
+    page_id,
+    name=None,
+    content=None,
+    date_iso=None,
+    message_id=None,
+    page_uuid=None,
+    event_url=None,
+    google_event_id=None,
 ):
     props = {}
     if name is not None:
@@ -120,6 +207,13 @@ def notion_update_event(
         }
     if page_uuid is not None:
         props["ページID"] = {"rich_text": [{"text": {"content": str(page_uuid)}}]}
+    if event_url is not None:
+        props["イベントURL"] = {"url": event_url}
+    if google_event_id is not None:
+        # GoogleイベントIDで相互参照できるように保存
+        props["GoogleイベントID"] = {
+            "rich_text": [{"text": {"content": str(google_event_id)}}]
+        }
 
     res = requests.patch(
         f"https://api.notion.com/v1/pages/{page_id}",
@@ -145,9 +239,11 @@ def notion_delete_event(page_id):
 
 
 # 過去(当日より前)のイベントをNotionからアーカイブ扱いで削除する
-def delete_past_events():
+def delete_past_events_for_db(db_id):
+    if not db_id:
+        return
     # クエリを送って全イベントを取得（json）
-    url = f"https://api.notion.com/v1/databases/{NOTION_EVENT_DB_ID}/query"
+    url = f"https://api.notion.com/v1/databases/{db_id}/query"
     res = requests.post(url, headers=headers, json={}).json()
 
     # 日付(日本時間)を取得
@@ -162,8 +258,8 @@ def delete_past_events():
         # 日付(ISO形式)をdatetimeに変換する(startは日時プロパティの開始日時)
         dt = datetime.fromisoformat(date_prop["start"]).date()
 
-        # 今日より31日前なら削除
-        if today.day - dt.day > 30:
+        # 今日から30日以上前なら削除
+        if (today - dt).days >= 30:
             requests.patch(
                 f"https://api.notion.com/v1/pages/{page['id']}",
                 headers=headers,
@@ -173,9 +269,50 @@ def delete_past_events():
             print(f"[AUTO DELETE] {page['id']} をアーカイブ（削除）しました ({dt})")
 
 
+def delete_finished_events_for_db(db_id):
+    if not db_id:
+        return
+    # クエリを送って全イベントを取得（json）
+    url = f"https://api.notion.com/v1/databases/{db_id}/query"
+    res = requests.post(url, headers=headers, json={}).json()
+
+    now = datetime.now(JST)
+
+    for page in res.get("results", []):
+        date_prop = page["properties"]["日時"]["date"]
+        if not date_prop:
+            continue
+
+        # endがあればend、それ以外はstartを終了時刻として扱う
+        end_iso = date_prop.get("end") or date_prop.get("start")
+        if not end_iso:
+            continue
+
+        end_dt = datetime.fromisoformat(end_iso)
+
+        if end_dt <= now:
+            requests.patch(
+                f"https://api.notion.com/v1/pages/{page['id']}",
+                headers=headers,
+                json={"archived": True},
+            )
+            print(
+                f"[AUTO DELETE] {page['id']} を終了時刻によりアーカイブしました ({end_dt})"
+            )
+
+
+def delete_past_events():
+    # 外部用は30日以上前で削除
+    delete_past_events_for_db(NOTION_EVENT_EXTERNAL_DB_ID)
+    # 内部用は終了時刻を過ぎたら削除
+    delete_finished_events_for_db(NOTION_EVENT_INTERNAL_DB_ID)
+
+
 # クエリを送って全イベントを取得（json）
-def fetch_event_pages():
-    url = f"https://api.notion.com/v1/databases/{NOTION_EVENT_DB_ID}/query"
+def fetch_event_pages(db_id):
+    if not db_id:
+        return []
+    url = f"https://api.notion.com/v1/databases/{db_id}/query"
     res = requests.post(url, headers=headers, json={})
     if res.status_code != 200:
         # ログ出力
@@ -186,6 +323,29 @@ def fetch_event_pages():
 # イベント名が除外ワード("定例会")を含むかどうか
 def is_ignored_event(name: str) -> bool:
     return "定例会" in name
+
+
+def get_event_url(event) -> str:
+    # discord.pyのevent.urlがあればそれを使い、無ければURLを組み立てる
+    url = getattr(event, "url", None)
+    if url:
+        return str(url)
+    guild_id = getattr(event, "guild_id", None)
+    if guild_id:
+        return f"https://discord.com/events/{guild_id}/{event.id}"
+    return None
+
+
+def find_event_page(db_id, event_id_str):
+    pages = fetch_event_pages(db_id)
+    for page in pages:
+        prop = page["properties"].get("メッセージID", {}).get("rich_text", [])
+        if not prop:
+            continue
+        mid = prop[0]["text"]["content"]
+        if mid == event_id_str:
+            return page
+    return None
 
 
 # ======================================================
@@ -662,25 +822,43 @@ async def on_scheduled_event_create(event):
     Discord のサーバーイベントが作成されたときに呼ばれる
     ここで Notion のイベントDBに登録する
     """
-    # 除外ワードを含むイベントは無視
-    if is_ignored_event(event.name):
-        print(f"⚠️ 除外イベントのため登録しません: {event.name}")
-        return
-    
     name = event.name
     description = event.description or "(内容なし)"
     start_iso = to_jst_iso(event.start_time)
+    event_url = get_event_url(event)
     creator_id = (
         event.creator_id
         or (event.creator.id if event.creator else "unknown")
     )
 
+    # Discordイベント作成時にGoogleカレンダーへ登録（終了時刻が無い場合は1時間後）
+    end_time = event.end_time or (event.start_time + timedelta(hours=1))
+    google_event = google_add_event(name, description, event.start_time, end_time)
+    google_event_id = google_event.get("id") if google_event else None
+
+    # 外部用DB: 定例会は除外
+    if not is_ignored_event(event.name):
+        notion_add_event(
+            NOTION_EVENT_EXTERNAL_DB_ID,
+            name=name,
+            content=description,
+            date_iso=start_iso,
+            message_id=event.id,  # メッセージID枠にイベントIDを保存
+            creator_id=creator_id,
+        )
+    else:
+        print(f"⚠️ 外部用DBは除外イベントのため登録しません: {event.name}")
+
+    # 内部用DB: 定例会も含めて登録（URL/GoogleイベントID付き）
     notion_add_event(
+        NOTION_EVENT_INTERNAL_DB_ID,
         name=name,
         content=description,
         date_iso=start_iso,
         message_id=event.id,  # メッセージID枠にイベントIDを保存
         creator_id=creator_id,
+        event_url=event_url,
+        google_event_id=google_event_id,
     )
 
     print(f"🆕 Discordイベント作成 → Notion登録: {name}")
@@ -692,43 +870,55 @@ async def on_scheduled_event_update(before, after):
     Discord イベントが更新されたときに呼ばれる
     Notion 側で「メッセージID == after.id」のページを探して更新
     """
-    # 除外ワードを含むイベントは無視
-    if is_ignored_event(after.name):
-        print(f"⚠️ 除外イベントのため更新しません: {after.name}")
-        return
-    
-    pages = fetch_event_pages()
-    target = None
     after_id_str = str(after.id)
+    event_url = get_event_url(after)
 
-    for page in pages:
-        prop = page["properties"].get("メッセージID", {}).get("rich_text", [])
-        if not prop:
-            continue
-        mid = prop[0]["text"]["content"]
-        if mid == after_id_str:
-            target = page
-            break
+    # 外部用DB: 定例会は除外
+    target = None
+    if not is_ignored_event(after.name):
+        target = find_event_page(NOTION_EVENT_EXTERNAL_DB_ID, after_id_str)
+    else:
+        print(f"⚠️ 外部用DBは除外イベントのため更新しません: {after.name}")
 
-    if not target:
-        print("⚠️ Notion 側に対応するイベントページが見つかりません。")
-        return
+    # 内部用DB: 定例会も含めて更新
+    internal_target = find_event_page(NOTION_EVENT_INTERNAL_DB_ID, after_id_str)
 
-    page_id = target["id"]
     new_name = after.name
     new_content = after.description or "(内容なし)"
     new_date_iso = to_jst_iso(after.start_time)
 
-    ok = notion_update_event(
-        page_id,
-        name=new_name,
-        content=new_content,
-        date_iso=new_date_iso,
-    )
-    if ok:
-        print(f"✏️ Discordイベント更新 → Notion更新: {new_name}")
+    if target:
+        page_id = target["id"]
+        ok = notion_update_event(
+            page_id,
+            name=new_name,
+            content=new_content,
+            date_iso=new_date_iso,
+        )
+        if ok:
+            print(f"✏️ Discordイベント更新 → 外部用Notion更新: {new_name}")
+        else:
+            print("❌ 外部用Notion イベント更新に失敗しました。")
     else:
-        print("❌ Notion イベント更新に失敗しました。")
+        if NOTION_EVENT_EXTERNAL_DB_ID and not is_ignored_event(after.name):
+            print("⚠️ 外部用Notion 側に対応するイベントページが見つかりません。")
+
+    if internal_target:
+        page_id = internal_target["id"]
+        ok = notion_update_event(
+            page_id,
+            name=new_name,
+            content=new_content,
+            date_iso=new_date_iso,
+            event_url=event_url,
+        )
+        if ok:
+            print(f"✏️ Discordイベント更新 → 内部用Notion更新: {new_name}")
+        else:
+            print("❌ 内部用Notion イベント更新に失敗しました。")
+    else:
+        if NOTION_EVENT_INTERNAL_DB_ID:
+            print("⚠️ 内部用Notion 側に対応するイベントページが見つかりません。")
 
 
 @bot.event
@@ -737,32 +927,32 @@ async def on_scheduled_event_delete(event):
     Discord イベントが削除されたときに呼ばれる
     Notion 側の対応するページをアーカイブ
     """
-    # 除外ワードを含むイベントは無視
-    if is_ignored_event(event.name):
-        print(f"⚠️ 除外イベントの削除は無視します: {event.name}")
-        return
-    
-    pages = fetch_event_pages()
-    target_id = None
     eid = str(event.id)
 
-    for page in pages:
-        prop = page["properties"].get("メッセージID", {}).get("rich_text", [])
-        if not prop:
-            continue
-        mid = prop[0]["text"]["content"]
-        if mid == eid:
-            target_id = page["id"]
-            break
-
-    if not target_id:
-        print("⚠️ 削除対象の Notion イベントが見つかりません。")
-        return
-
-    if notion_delete_event(target_id):
-        print(f"🗑️ Discordイベント削除 → Notionイベント削除: {event.name}")
+    # 外部用DB: 定例会は除外
+    if not is_ignored_event(event.name):
+        target = find_event_page(NOTION_EVENT_EXTERNAL_DB_ID, eid)
+        if target:
+            if notion_delete_event(target["id"]):
+                print(f"🗑️ Discordイベント削除 → 外部用Notion削除: {event.name}")
+            else:
+                print("❌ 外部用Notion イベント削除に失敗しました。")
+        else:
+            if NOTION_EVENT_EXTERNAL_DB_ID:
+                print("⚠️ 外部用の削除対象Notionイベントが見つかりません。")
     else:
-        print("❌ Notion イベント削除に失敗しました。")
+        print(f"⚠️ 外部用DBは除外イベントの削除は無視します: {event.name}")
+
+    # 内部用DB: 定例会も含めて削除
+    internal_target = find_event_page(NOTION_EVENT_INTERNAL_DB_ID, eid)
+    if internal_target:
+        if notion_delete_event(internal_target["id"]):
+            print(f"🗑️ Discordイベント削除 → 内部用Notion削除: {event.name}")
+        else:
+            print("❌ 内部用Notion イベント削除に失敗しました。")
+    else:
+        if NOTION_EVENT_INTERNAL_DB_ID:
+            print("⚠️ 内部用の削除対象Notionイベントが見つかりません。")
 
 
 # ===============================
