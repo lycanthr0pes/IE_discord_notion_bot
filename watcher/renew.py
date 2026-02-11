@@ -1,10 +1,17 @@
 import json
 import os
 import uuid
+import logging
 from datetime import datetime, timezone
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+logger = logging.getLogger("watcher.renew")
 
 GOOGLE_CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID")
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
@@ -154,9 +161,9 @@ def stop_old_channel(service, state):
         return
     try:
         service.channels().stop(body={"id": channel_id, "resourceId": resource_id}).execute()
-        print("old watch stopped:", channel_id)
+        logger.info("old watch stopped: %s", channel_id)
     except Exception as exc:
-        print("warn: failed to stop old channel:", exc)
+        logger.warning("failed to stop old channel: %s", exc)
 
 
 def main():
@@ -199,7 +206,7 @@ def main():
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
     )
-    print("watch renewed:", response)
+    logger.info("watch renewed: %s", response)
 
 
 if __name__ == "__main__":

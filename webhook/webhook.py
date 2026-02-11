@@ -1,11 +1,18 @@
 import json
 import os
+import logging
 from datetime import datetime, timezone, timedelta
 
 import requests
 from flask import Flask, request
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+logger = logging.getLogger("webhook")
 
 app = Flask(__name__)
 
@@ -268,7 +275,7 @@ def notion_create_event(name, content, date_prop, creator_id, event_url, google_
     }
     res = requests.post(url, headers=headers, json=data)
     if res.status_code not in (200, 201):
-        print("❌ Notion作成エラー:", res.text)
+        logger.error("Notion作成エラー: %s", res.text)
         return None
 
     page_id = res.json()["id"]
@@ -415,7 +422,7 @@ def sync_calendar_to_notion():
     # ------------------------------------------------------------
     # Pub/Sub通知をトリガーに差分同期(作成/更新/削除)を実行
     if not (NOTION_TOKEN and NOTION_EVENT_INTERNAL_DB_ID and GOOGLE_CALENDAR_ID):
-        print("❌ 必要な環境変数が不足しています")
+        logger.error("必要な環境変数が不足しています")
         return
 
     state = load_sync_state()

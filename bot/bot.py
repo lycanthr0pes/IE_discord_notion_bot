@@ -1,6 +1,7 @@
 ﻿import os
 import re
 import json
+import logging
 import requests
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -8,6 +9,12 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 from datetime import datetime, timezone, timedelta
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+logger = logging.getLogger("bot")
 
 # ==============================
 # 環境変数
@@ -194,7 +201,7 @@ def google_add_event(name, description, start_dt, end_dt):
             .execute()
         )
     except Exception as exc:
-        print("❌ Googleカレンダー追加失敗:", exc)
+        logger.error("Googleカレンダー追加失敗: %s", exc)
         return None
 
 
@@ -255,7 +262,7 @@ def notion_add_event(
     res = requests.post(url, headers=headers, json=data)
     if res.status_code not in (200, 201):
         # ログ出力
-        print("❌ Notion作成エラー:", res.text)
+        logger.error("Notion作成エラー: %s", res.text)
         return None
 
     # ページIDを追加
@@ -353,7 +360,7 @@ def notion_delete_event(page_id):
 
     #ログ出力
     if res.status_code not in (200, 201):
-        print("❌ Notion削除エラー:", res.text)
+        logger.error("Notion削除エラー: %s", res.text)
         return False
 
     return True
@@ -400,7 +407,7 @@ def delete_past_events_for_db(db_id):
                 json={"archived": True},
             )
             # ログ出力
-            print(f"[AUTO DELETE] {page['id']} をアーカイブ（削除）しました ({dt})")
+            logger.info("[AUTO DELETE] %s をアーカイブ（削除）しました (%s)", page["id"], dt)
 
 
 def delete_finished_events_for_db(db_id):
@@ -443,9 +450,7 @@ def delete_finished_events_for_db(db_id):
                 headers=headers,
                 json={"archived": True},
             )
-            print(
-                f"[AUTO DELETE] {page['id']} を終了時刻によりアーカイブしました ({end_dt})"
-            )
+            logger.info("[AUTO DELETE] %s を終了時刻によりアーカイブしました (%s)", page["id"], end_dt)
 
 
 def delete_past_events():
@@ -483,7 +488,7 @@ def fetch_event_pages(db_id):
     res = requests.post(url, headers=headers, json={})
     if res.status_code != 200:
         # ログ出力
-        print("❌ イベント一覧取得失敗:", res.text)
+        logger.error("イベント一覧取得失敗: %s", res.text)
         return []
     return res.json().get("results", [])
 
@@ -833,7 +838,7 @@ def ensure_question_numbers():
 
     # ログ出力
     if missing_pages:
-        print(f"✅ 新たに {len(missing_pages)} 件の質問番号を採番しました。")
+        logger.info("新たに %s 件の質問番号を採番しました。", len(missing_pages))
 
 
 async def send_qa_notification(bot: commands.Bot, ctype: str, page: dict):
@@ -1322,7 +1327,7 @@ async def send_day_before_reminder(bot: commands.Bot, event) -> bool:
         try:
             channel = await bot.fetch_channel(REMINDER_CHANNEL_ID)
         except Exception as exc:
-            print("warn: failed to fetch reminder channel:", exc)
+            logger.warning("failed to fetch reminder channel: %s", exc)
             return False
 
     start_iso = to_jst_iso(event.start_time)
@@ -1345,7 +1350,7 @@ async def send_day_before_reminder(bot: commands.Bot, event) -> bool:
         )
         return True
     except Exception as exc:
-        print("warn: failed to send day-before reminder:", exc)
+        logger.warning("failed to send day-before reminder: %s", exc)
         return False
 
 
@@ -1400,7 +1405,7 @@ async def auto_check_qa(bot: commands.Bot):
 
     # 起動直後は通知せず、キャッシュ作成だけ行う
     if FIRST_QA_RUN:
-        print("Skipping QA notifications on first run.")
+        logger.info("Skipping QA notifications on first run.")
 
         # FIRST_QA_RUN = False をキャッシュへ保存
         cache = load_cache()
@@ -1501,7 +1506,7 @@ class MyBot(commands.Bot):
         # ------------------------------------------------------------
         await self.add_cog(QACommands(self))
         await self.tree.sync()
-        print("Slash commands synced")
+        logger.info("Slash commands synced")
 
 
 intents = discord.Intents.default()
@@ -1529,13 +1534,13 @@ async def on_ready():
     # ------------------------------------------------------------
     global FIRST_QA_RUN
 
-    print(f"Bot Ready as {bot.user}")
+    logger.info("Bot Ready as %s", bot.user)
 
     # FIRST_QA_RUN をキャッシュから復元
     cache = load_cache()
     FIRST_QA_RUN = cache.get("_first_qa_run", True)
 
-    print("FIRST_QA_RUN =", FIRST_QA_RUN)
+    logger.info("FIRST_QA_RUN = %s", FIRST_QA_RUN)
 
     ensure_question_numbers()
 
@@ -1548,7 +1553,7 @@ async def on_ready():
     if not auto_day_before_reminder.is_running():
         auto_day_before_reminder.start(bot)
 
-    print("All background tasks started.")
+    logger.info("All background tasks started.")
 
 
 # ======================================================
@@ -1601,7 +1606,7 @@ async def on_scheduled_event_create(event):
             creator_id=creator_id,
         )
     else:
-        print(f"⚠️ 外部用DBは除外イベントのため登録しません: {event.name}")
+        logger.warning("外部用DBは除外イベントのため登録しません: %s", event.name)
 
     # 内部用DB: 定例会も含めて登録（URL/GoogleイベントID付き）
     notion_add_event(
@@ -1615,7 +1620,7 @@ async def on_scheduled_event_create(event):
         google_event_id=google_event_id,
     )
 
-    print(f"🆕 Discordイベント作成 → Notion登録: {name}")
+    logger.info("Discordイベント作成 -> Notion登録: %s", name)
 
 
 @bot.event
@@ -1647,7 +1652,7 @@ async def on_scheduled_event_update(before, after):
     if not is_ignored_event(after.name):
         target = find_event_page(NOTION_EVENT_EXTERNAL_DB_ID, after_id_str)
     else:
-        print(f"⚠️ 外部用DBは除外イベントのため更新しません: {after.name}")
+        logger.warning("外部用DBは除外イベントのため更新しません: %s", after.name)
 
     # 内部用DB: 定例会も含めて更新
     internal_target = find_event_page(NOTION_EVENT_INTERNAL_DB_ID, after_id_str)
@@ -1665,12 +1670,12 @@ async def on_scheduled_event_update(before, after):
             date_iso=new_date_iso,
         )
         if ok:
-            print(f"✏️ Discordイベント更新 → 外部用Notion更新: {new_name}")
+            logger.info("Discordイベント更新 -> 外部用Notion更新: %s", new_name)
         else:
-            print("❌ 外部用Notion イベント更新に失敗しました。")
+            logger.error("外部用Notion イベント更新に失敗しました。")
     else:
         if NOTION_EVENT_EXTERNAL_DB_ID and not is_ignored_event(after.name):
-            print("⚠️ 外部用Notion 側に対応するイベントページが見つかりません。")
+            logger.warning("外部用Notion 側に対応するイベントページが見つかりません。")
 
     if internal_target:
         page_id = internal_target["id"]
@@ -1682,12 +1687,12 @@ async def on_scheduled_event_update(before, after):
             event_url=event_url,
         )
         if ok:
-            print(f"✏️ Discordイベント更新 → 内部用Notion更新: {new_name}")
+            logger.info("Discordイベント更新 -> 内部用Notion更新: %s", new_name)
         else:
-            print("❌ 内部用Notion イベント更新に失敗しました。")
+            logger.error("内部用Notion イベント更新に失敗しました。")
     else:
         if NOTION_EVENT_INTERNAL_DB_ID:
-            print("⚠️ 内部用Notion 側に対応するイベントページが見つかりません。")
+            logger.warning("内部用Notion 側に対応するイベントページが見つかりません。")
 
 
 @bot.event
@@ -1717,25 +1722,25 @@ async def on_scheduled_event_delete(event):
         target = find_event_page(NOTION_EVENT_EXTERNAL_DB_ID, eid)
         if target:
             if notion_delete_event(target["id"]):
-                print(f"🗑️ Discordイベント削除 → 外部用Notion削除: {event.name}")
+                logger.info("Discordイベント削除 -> 外部用Notion削除: %s", event.name)
             else:
-                print("❌ 外部用Notion イベント削除に失敗しました。")
+                logger.error("外部用Notion イベント削除に失敗しました。")
         else:
             if NOTION_EVENT_EXTERNAL_DB_ID:
-                print("⚠️ 外部用の削除対象Notionイベントが見つかりません。")
+                logger.warning("外部用の削除対象Notionイベントが見つかりません。")
     else:
-        print(f"⚠️ 外部用DBは除外イベントの削除は無視します: {event.name}")
+        logger.warning("外部用DBは除外イベントの削除は無視します: %s", event.name)
 
     # 内部用DB: 定例会も含めて削除
     internal_target = find_event_page(NOTION_EVENT_INTERNAL_DB_ID, eid)
     if internal_target:
         if notion_delete_event(internal_target["id"]):
-            print(f"🗑️ Discordイベント削除 → 内部用Notion削除: {event.name}")
+            logger.info("Discordイベント削除 -> 内部用Notion削除: %s", event.name)
         else:
-            print("❌ 内部用Notion イベント削除に失敗しました。")
+            logger.error("内部用Notion イベント削除に失敗しました。")
     else:
         if NOTION_EVENT_INTERNAL_DB_ID:
-            print("⚠️ 内部用の削除対象Notionイベントが見つかりません。")
+            logger.warning("内部用の削除対象Notionイベントが見つかりません。")
 
 
 # ===============================
@@ -1743,3 +1748,4 @@ async def on_scheduled_event_delete(event):
 # ===============================
 if __name__ == "__main__":
     bot.run(DISCORD_TOKEN)
+

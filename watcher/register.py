@@ -1,10 +1,17 @@
 import json
 import os
 import uuid
+import logging
 from datetime import datetime, timezone
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+logger = logging.getLogger("watcher.register")
 
 GOOGLE_CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID")
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
@@ -156,7 +163,7 @@ def main():
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
     )
-    print("watch registered:", response)
+    logger.info("watch registered: %s", response)
 
 
 if __name__ == "__main__":
