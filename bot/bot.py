@@ -1,4 +1,4 @@
-import os
+﻿import os
 import re
 import json
 import requests
@@ -77,39 +77,102 @@ GOOGLE_SCOPES = ["https://www.googleapis.com/auth/calendar"]
 _google_service = None
 
 def load_service_account_info():
-    # JSON文字列またはJSONファイルからサービスアカウント情報を取得
+    # ------------------------------------------------------------
+    # Google Service Account の認証情報(json/dict)を読み込んで返す。
+    #
+    # 入力:
+    # - 環境変数を参照
+    # - GOOGLE_SERVICE_ACCOUNT_JSON
+    #   1) JSON文字列そのもの
+    #   2) JSONファイルのパス
+    # - GOOGLE_SERVICE_ACCOUNT_JSON_PATH
+    #   明示的なJSONファイルパス
+    #
+    # 出力:
+    # - 成功: service_account_info(dict)
+    # - 失敗: None
+    # ------------------------------------------------------------
     json_env = GOOGLE_SERVICE_ACCOUNT_JSON
     if json_env:
+        # ケース1: 環境変数がファイルパス
         if os.path.exists(json_env):
             with open(json_env, "r", encoding="utf-8") as f:
                 return json.load(f)
         try:
+            # ケース2: 環境変数がJSON文字列
             return json.loads(json_env)
         except json.JSONDecodeError:
+            # 文字列はあるがJSONとして壊れている
             return None
 
+    # 明示パス指定を利用
     if GOOGLE_SERVICE_ACCOUNT_JSON_PATH and os.path.exists(GOOGLE_SERVICE_ACCOUNT_JSON_PATH):
         with open(GOOGLE_SERVICE_ACCOUNT_JSON_PATH, "r", encoding="utf-8") as f:
             return json.load(f)
+    # 認証情報を解決できなかった
     return None
 
 def get_google_calendar_service():
-    # Google Calendar APIクライアントを遅延初期化して再利用
+    # ------------------------------------------------------------
+    # Google Calendar API クライアントを生成し、グローバルにキャッシュして返す。
+    #
+    # 入力:
+    # - 直接引数はなし
+    # - GOOGLE_CALENDAR_ID
+    # - load_service_account_info() の返り値
+    #
+    # 出力:
+    # - 成功: googleapiclient.discovery.build(...) の service オブジェクト
+    # - 失敗: None
+    #
+    # 失敗条件:
+    # - カレンダーID未設定
+    # - サービスアカウント情報の読み込み失敗
+    #
+    # 備考:
+    # 一度生成した service は _google_service に保持し、再利用してAPI初期化コストを抑える。
+    # ------------------------------------------------------------
     global _google_service
+    # 既に初期化済みならそのまま返す
     if _google_service is not None:
         return _google_service
+    # カレンダーIDが無い場合は連携不能
     if not GOOGLE_CALENDAR_ID:
         return None
+    # 認証情報をロード
     info = load_service_account_info()
+    # 認証情報が取得できなければ連携不能
     if not info:
         return None
+    # Service Account から認証情報を生成して Calendar API client を作成
     creds = service_account.Credentials.from_service_account_info(info, scopes=GOOGLE_SCOPES)
     _google_service = build("calendar", "v3", credentials=creds, cache_discovery=False)
     return _google_service
 
 def google_add_event(name, description, start_dt, end_dt):
-    # DiscordイベントをGoogleカレンダーへ追加
+    # ------------------------------------------------------------
+    # Discordのイベント情報をGoogle Calendarへ登録する。
+    #
+    # 引数:
+    # - name: 予定タイトル
+    # - description: 予定説明
+    # - start_dt: 開始日時(datetime)
+    # - end_dt: 終了日時(datetime)
+    #
+    # 出力:
+    # - 成功: Google Calendar API の insert レスポンス(dict)
+    # - 失敗: None
+    #
+    # 処理概要:
+    # 1) Calendar API service を取得
+    # 2) 日時をJST ISO文字列へ変換
+    # 3) events.insert を実行
+    #
+    # 備考:
+    # エラー時は例外を握りつぶして None を返す。
+    # ------------------------------------------------------------
     service = get_google_calendar_service()
+    # Google service が無ければスキップ
     if not service:
         return None
     start_iso = to_jst_iso(start_dt)
@@ -121,6 +184,7 @@ def google_add_event(name, description, start_dt, end_dt):
         "end": {"dateTime": end_iso, "timeZone": "Asia/Tokyo"},
     }
     try:
+        # Calendar に予定を作成し、APIレスポンスを返す
         return (
             service.events()
             .insert(calendarId=GOOGLE_CALENDAR_ID, body=body)
@@ -139,6 +203,27 @@ def google_add_event(name, description, start_dt, end_dt):
 def notion_add_event(
     db_id, name, content, date_iso, message_id, creator_id, event_url=None, google_event_id=None
 ):
+    # ------------------------------------------------------------
+    # Notion DB にイベントページを新規作成する。
+    #
+    # 引数:
+    # - db_id: 登録先Notion DB ID
+    # - name: イベント名
+    # - content: イベント内容
+    # - date_iso: ISO形式の開始日時
+    # - message_id: DiscordイベントID（メッセージID列に保存）
+    # - creator_id: 作成者ID
+    # - event_url: 任意。イベントURL（内部DB向け）
+    # - google_event_id: 任意。GoogleイベントID（相互参照用）
+    #
+    # 出力:
+    # - 成功: 作成した Notion ページID(str)
+    # - 失敗: None
+    #
+    # 備考:
+    # 作成直後に notion_update_event(..., page_uuid=page_id) を呼び、
+    # 「ページID」プロパティへページ自身のIDを反映する。
+    # ------------------------------------------------------------
     # message_idにDiscordのイベントIDを入れる
     if not db_id:
         return None
@@ -178,6 +263,16 @@ def notion_add_event(
 
 # Notion APIを使ってNotion上のイベントを取得し、JSONデータを返す
 def notion_get_event(page_id):
+    # ------------------------------------------------------------
+    # page_id をキーに Notion のイベントページを1件取得する。
+    #
+    # 引数:
+    # - page_id: NotionページID
+    #
+    # 出力:
+    # - 成功: ページJSON(dict)
+    # - 失敗: None
+    # ------------------------------------------------------------
     res = requests.get(f"https://api.notion.com/v1/pages/{page_id}", headers=headers)
     data = res.json()
     return data if "id" in data else None
@@ -194,6 +289,18 @@ def notion_update_event(
     event_url=None,
     google_event_id=None,
 ):
+    # ------------------------------------------------------------
+    # 既存のNotionイベントページを部分更新する。
+    #
+    # 引数:
+    # - page_id: 更新対象ページID
+    # - name/content/date_iso/message_id/page_uuid/event_url/google_event_id:
+    #   None 以外の項目だけ更新対象に含める
+    #
+    # 出力:
+    # - 成功: True
+    # - 失敗: False
+    # ------------------------------------------------------------
     props = {}
     if name is not None:
         props["イベント名"] = {"title": [{"text": {"content": name}}]}
@@ -225,6 +332,17 @@ def notion_update_event(
 
 # イベントをNotionからアーカイブ扱いで削除する
 def notion_delete_event(page_id):
+    # ------------------------------------------------------------
+    # 関数解説:
+    # Notionページをアーカイブ扱いで削除する（archived=True）。
+    #
+    # 引数:
+    # - page_id: 対象ページID
+    #
+    # 出力:
+    # - 成功: True
+    # - 失敗: False
+    # ------------------------------------------------------------
     url = f"https://api.notion.com/v1/pages/{page_id}"
     data = {"archived": True}
 
@@ -240,6 +358,19 @@ def notion_delete_event(page_id):
 
 # 過去(当日より前)のイベントをNotionからアーカイブ扱いで削除する
 def delete_past_events_for_db(db_id):
+    # ------------------------------------------------------------
+    # 指定DB内のイベントを走査し、30日以上前の予定をアーカイブする。
+    #
+    # 引数:
+    # - db_id: 対象Notion DB ID
+    #
+    # 出力:
+    # - なし
+    #
+    # 判定ルール:
+    # - 日時.start を日付化
+    # - (today - event_date).days >= 30 を削除対象とする
+    # ------------------------------------------------------------
     if not db_id:
         return
     # クエリを送って全イベントを取得（json）
@@ -270,6 +401,19 @@ def delete_past_events_for_db(db_id):
 
 
 def delete_finished_events_for_db(db_id):
+    # ------------------------------------------------------------
+    # 指定DB内のイベントを走査し、終了時刻を過ぎた予定をアーカイブする。
+    #
+    # 引数:
+    # - db_id: 対象Notion DB ID
+    #
+    # 出力:
+    # - なし
+    #
+    # 判定ルール:
+    # - end があれば end、無ければ start を終了時刻として扱う
+    # - end_dt <= now なら削除対象
+    # ------------------------------------------------------------
     if not db_id:
         return
     # クエリを送って全イベントを取得（json）
@@ -302,6 +446,16 @@ def delete_finished_events_for_db(db_id):
 
 
 def delete_past_events():
+    # ------------------------------------------------------------
+    # DB種別ごとの自動削除ポリシーをまとめて実行する。
+    #
+    # 実行内容:
+    # - 外部用DB: 30日以上前のイベントを削除
+    # - 内部用DB: 終了時刻を過ぎたイベントを削除
+    #
+    # 出力:
+    # - なし
+    # ------------------------------------------------------------
     # 外部用は30日以上前で削除
     delete_past_events_for_db(NOTION_EVENT_EXTERNAL_DB_ID)
     # 内部用は終了時刻を過ぎたら削除
@@ -310,6 +464,16 @@ def delete_past_events():
 
 # クエリを送って全イベントを取得（json）
 def fetch_event_pages(db_id):
+    # ------------------------------------------------------------
+    # 指定Notion DBのページ一覧を取得する。
+    #
+    # 引数:
+    # - db_id: 対象Notion DB ID
+    #
+    # 出力:
+    # - 成功: ページ配列(list[dict])
+    # - 失敗: 空配列 []
+    # ------------------------------------------------------------
     if not db_id:
         return []
     url = f"https://api.notion.com/v1/databases/{db_id}/query"
@@ -322,10 +486,34 @@ def fetch_event_pages(db_id):
 
 # イベント名が除外ワード("定例会")を含むかどうか
 def is_ignored_event(name: str) -> bool:
+    # ------------------------------------------------------------
+    # 同期対象から除外するイベント名かを判定する。
+    #
+    # 引数:
+    # - name: イベント名
+    #
+    # 出力:
+    # - True: 除外対象（「定例会」を含む）
+    # - False: 同期対象
+    # ------------------------------------------------------------
     return "定例会" in name
 
 
 def get_event_url(event) -> str:
+    # ------------------------------------------------------------
+    # Discord Scheduled Event のURLを取得する。
+    #
+    # 引数:
+    # - event: Discord Scheduled Event オブジェクト
+    #
+    # 出力:
+    # - URL文字列
+    # - 取得不可の場合は None
+    #
+    # 優先順位:
+    # - event.url があればそれを使う
+    # - 無ければ guild_id / event.id からURLを組み立てる
+    # ------------------------------------------------------------
     # discord.pyのevent.urlがあればそれを使い、無ければURLを組み立てる
     url = getattr(event, "url", None)
     if url:
@@ -337,6 +525,20 @@ def get_event_url(event) -> str:
 
 
 def find_event_page(db_id, event_id_str):
+    # ------------------------------------------------------------
+    # Notion DB内から「メッセージID == event_id_str」のページを検索する。
+    #
+    # 引数:
+    # - db_id: 検索対象Notion DB ID
+    # - event_id_str: DiscordイベントID（文字列）
+    #
+    # 出力:
+    # - 見つかったページ(dict)
+    # - 見つからない場合 None
+    #
+    # 備考:
+    # Discordイベント更新/削除時にNotionページを特定するための関数。
+    # ------------------------------------------------------------
     pages = fetch_event_pages(db_id)
     for page in pages:
         prop = page["properties"].get("メッセージID", {}).get("rich_text", [])
@@ -354,6 +556,16 @@ def find_event_page(db_id, event_id_str):
 
 # Q&A DBの取得・差分管理
 def fetch_qa_db():
+    # ------------------------------------------------------------
+    # Q&A 用 Notion DB をクエリしてページ一覧を取得する。
+    #
+    # 引数:
+    # - なし（NOTION_QA_DB_ID を参照）
+    #
+    # 出力:
+    # - 成功: DBクエリ結果JSON(dict)
+    # - 失敗: None
+    # ------------------------------------------------------------
     url = f"https://api.notion.com/v1/databases/{NOTION_QA_DB_ID}/query"
     res = requests.post(url, headers=headers, json={})
     return res.json() if res.status_code == 200 else None
@@ -363,6 +575,19 @@ CACHE_FILE = "notion_cache.json"
 
 # キャッシュ読み込み
 def load_cache():
+    # ------------------------------------------------------------
+    # ローカルキャッシュファイル（notion_cache.json）を読み込む。
+    #
+    # 引数:
+    # - なし
+    #
+    # 出力:
+    # - 成功: キャッシュdict
+    # - 失敗/未作成: 空dict {}
+    #
+    # 備考:
+    # JSON破損や読み込み例外でも空dictにフォールバックする。
+    # ------------------------------------------------------------
     if not os.path.exists(CACHE_FILE):
         return {}
     try:
@@ -373,6 +598,19 @@ def load_cache():
 
 # キャッシュ書き込み＋初回起動フラグ
 def save_cache(cache, first_run_flag=None):
+    # ------------------------------------------------------------
+    # キャッシュをローカルJSONへ保存する。
+    #
+    # 引数:
+    # - cache: 保存するキャッシュdict
+    # - first_run_flag: 任意。初回起動判定フラグ
+    #
+    # 出力:
+    # - なし
+    #
+    # 備考:
+    # first_run_flag が指定された場合は _first_qa_run として同時保存する。
+    # ------------------------------------------------------------
     # FIRST_QA_RUN のフラグをキャッシュに保存
     if first_run_flag is not None:
         cache["_first_qa_run"] = first_run_flag
@@ -382,6 +620,20 @@ def save_cache(cache, first_run_flag=None):
 
 # 新規 / 更新ページの検出
 def get_qa_changes():
+    # ------------------------------------------------------------
+    # Notion Q&A DB の新規/更新ページを差分検出する。
+    #
+    # 引数:
+    # - なし
+    #
+    # 出力:
+    # - 差分配列 list[tuple[str, dict]]
+    #   ("new" | "update", page_json)
+    #
+    # 備考:
+    # 比較キーは page_id と last_edited_time。
+    # 判定後に最新状態をキャッシュへ保存する。
+    # ------------------------------------------------------------
     data = fetch_qa_db()
     if not data:
         return []
@@ -405,16 +657,46 @@ def get_qa_changes():
 
 
 def get_question(page) -> str:
+    # ------------------------------------------------------------
+    # Q&Aページから質問文を取り出す。
+    #
+    # 引数:
+    # - page: NotionページJSON
+    #
+    # 出力:
+    # - 質問文字列
+    # - 未設定時は "(質問なし)"
+    # ------------------------------------------------------------
     t = page["properties"]["質問"]["title"]
     return t[0]["plain_text"] if t else "(質問なし)"
 
 
 def get_answer(page) -> str:
+    # ------------------------------------------------------------
+    # Q&Aページから回答文を取り出す。
+    #
+    # 引数:
+    # - page: NotionページJSON
+    #
+    # 出力:
+    # - 回答文字列
+    # - 未設定時は "(回答なし)"
+    # ------------------------------------------------------------
     t = page["properties"]["回答"]["rich_text"]
     return t[0]["plain_text"] if t else "(回答なし)"
 
 # 未回答の質問一覧
 def fetch_unanswered():
+    # ------------------------------------------------------------
+    # 回答プロパティが空の質問ページ一覧を取得する。
+    #
+    # 引数:
+    # - なし（NOTION_QA_DB_ID を参照）
+    #
+    # 出力:
+    # - 成功: 未回答ページ配列 list[dict]
+    # - 失敗: 空配列 []
+    # ------------------------------------------------------------
     url = f"https://api.notion.com/v1/databases/{NOTION_QA_DB_ID}/query"
     data = {"filter": {"property": "回答", "rich_text": {"is_empty": True}}}
     res = requests.post(url, headers=headers, json=data)
@@ -423,6 +705,16 @@ def fetch_unanswered():
 
 # 回答済みの質問一覧
 def fetch_answered():
+    # ------------------------------------------------------------
+    # 回答プロパティが埋まっている質問ページ一覧を取得する。
+    #
+    # 引数:
+    # - なし（NOTION_QA_DB_ID を参照）
+    #
+    # 出力:
+    # - 成功: 回答済みページ配列 list[dict]
+    # - 失敗: 空配列 []
+    # ------------------------------------------------------------
     url = f"https://api.notion.com/v1/databases/{NOTION_QA_DB_ID}/query"
     data = {"filter": {"property": "回答", "rich_text": {"is_not_empty": True}}}
     res = requests.post(url, headers=headers, json=data)
@@ -430,6 +722,17 @@ def fetch_answered():
 
 # Notionに回答を書き込む
 def update_answer(page_id, answer: str) -> bool:
+    # ------------------------------------------------------------
+    # 指定ページの「回答」プロパティを更新する。
+    #
+    # 引数:
+    # - page_id: 更新対象ページID
+    # - answer: 保存する回答文
+    #
+    # 出力:
+    # - 成功: True
+    # - 失敗: False
+    # ------------------------------------------------------------
     url = f"https://api.notion.com/v1/pages/{page_id}"
     data = {
         "properties": {
@@ -443,6 +746,20 @@ def update_answer(page_id, answer: str) -> bool:
 
 
 def ensure_question_numbers():
+    # ------------------------------------------------------------
+    # 質問番号が未採番のページに連番を付与する。
+    #
+    # 引数:
+    # - なし
+    #
+    # 出力:
+    # - なし
+    #
+    # 処理概要:
+    # 1) 既存の最大質問番号を取得
+    # 2) 未採番ページを created_time 昇順で並べる
+    # 3) next_num から順に採番して保存
+    # ------------------------------------------------------------
     # 質問番号を持たないページにだけ、追加順で新しい番号を付与する
     data = fetch_qa_db()
     if not data:
@@ -476,6 +793,20 @@ def ensure_question_numbers():
 
 
 async def send_qa_notification(bot: commands.Bot, ctype: str, page: dict):
+    # ------------------------------------------------------------
+    # Q&A の新規/更新通知を指定チャンネルへ送信する。
+    #
+    # 引数:
+    # - bot: Discord Bot インスタンス
+    # - ctype: "new" または "update"
+    # - page: NotionページJSON
+    #
+    # 出力:
+    # - なし
+    #
+    # 備考:
+    # QA_CHANNEL_ID == 0 の場合は通知をスキップする。
+    # ------------------------------------------------------------
     # Q&Aの新規/更新通知（未回答のみ対象）
     if QA_CHANNEL_ID == 0:
         return
@@ -511,6 +842,19 @@ async def send_qa_ephemeral(
     answer: str,
     action: str,
 ):
+    # ------------------------------------------------------------
+    # 回答者本人だけに見えるエフェメラル通知を送信する。
+    #
+    # 引数:
+    # - interaction: Discord Interaction
+    # - number: 質問番号
+    # - question: 質問文
+    # - answer: 回答文
+    # - action: 通知文言
+    #
+    # 出力:
+    # - なし
+    # ------------------------------------------------------------
     # 指定チャンネル内で、回答者本人にのみ見える形で再送
     number_display = number if number is not None else "?"
     msg = (
@@ -527,8 +871,27 @@ async def send_qa_ephemeral(
 # ==============================
 # 未回答の質問に新規回答を入力するモーダル
 class QAnswerModal(discord.ui.Modal):
+    # ------------------------------------------------------------
+    # 未回答の質問に対して、回答入力を受け付ける Discord モーダル。
+    #
+    # 役割:
+    # - 選択された質問ページIDを保持
+    # - 回答入力欄を表示
+    # - 送信時に Notion の回答プロパティを更新
+    # ------------------------------------------------------------
     #ページID、質問番号、質問文
     def __init__(self, page_id, number, question_text):
+        # ------------------------------------------------------------
+        # モーダル初期化時に対象ページ情報と入力UIを設定する。
+        #
+        # 引数:
+        # - page_id: 回答を書き込む Notion ページID
+        # - number: 質問番号（表示用）
+        # - question_text: 質問文（ラベル/再通知用）
+        #
+        # 出力:
+        # - なし（インスタンス状態を初期化）
+        # ------------------------------------------------------------
         super().__init__(title=f"回答入力（#{number}）")
         self.page_id = page_id
         self.number = number
@@ -542,6 +905,21 @@ class QAnswerModal(discord.ui.Modal):
         self.add_item(self.answer)
 
     async def on_submit(self, interaction: discord.Interaction):
+        # ------------------------------------------------------------
+        # モーダル送信時の処理。
+        #
+        # 処理概要:
+        # 1) update_answer() で Notion の回答を更新
+        # 2) 成功時は保存完了メッセージを返す
+        # 3) 成功時のみ send_qa_ephemeral() で本人向け再通知
+        # 4) 失敗時はエラーメッセージを返す
+        #
+        # 引数:
+        # - interaction: Discord Interaction
+        #
+        # 出力:
+        # - なし
+        # ------------------------------------------------------------
         # Notionに回答を書き込み、成功時のみ回答者へDM再送
         ok = update_answer(self.page_id, self.answer.value)
         if ok:
@@ -565,9 +943,29 @@ class QAnswerModal(discord.ui.Modal):
 
 
 class QEditModal(discord.ui.Modal):
+    # ------------------------------------------------------------
+    # 回答済み質問の回答文を編集するための Discord モーダル。
+    #
+    # 役割:
+    # - 対象質問のページID・質問番号・質問文を保持
+    # - 既存回答を初期値として入力欄に表示
+    # - 送信時に Notion の回答プロパティを更新
+    # ------------------------------------------------------------
     # 回答済みの質問について、回答を編集するモーダル
 
     def __init__(self, page_id, number, question_text, current_answer):
+        # ------------------------------------------------------------
+        # 編集モーダルの初期状態を構築する。
+        #
+        # 引数:
+        # - page_id: 更新対象の Notion ページID
+        # - number: 質問番号（表示用）
+        # - question_text: 質問文（ラベル/再通知用）
+        # - current_answer: 現在の回答文（入力初期値）
+        #
+        # 出力:
+        # - なし（インスタンス状態を初期化）
+        # ------------------------------------------------------------
         super().__init__(title=f"回答編集（#{number}）")
         self.page_id = page_id
         self.number = number
@@ -582,6 +980,21 @@ class QEditModal(discord.ui.Modal):
         self.add_item(self.answer)
 
     async def on_submit(self, interaction: discord.Interaction):
+        # ------------------------------------------------------------
+        # 編集モーダル送信時の処理。
+        #
+        # 処理概要:
+        # 1) update_answer() で既存回答を更新
+        # 2) 成功時は更新完了メッセージを返す
+        # 3) 成功時のみ send_qa_ephemeral() で本人向け再通知
+        # 4) 失敗時はエラーメッセージを返す
+        #
+        # 引数:
+        # - interaction: Discord Interaction
+        #
+        # 出力:
+        # - なし
+        # ------------------------------------------------------------
         # 既存回答を更新し、成功時は回答者へDM再送
         ok = update_answer(self.page_id, self.answer.value)
         if ok:
@@ -605,9 +1018,28 @@ class QEditModal(discord.ui.Modal):
 
 
 class AnswerSelectView(discord.ui.View):
+    # ------------------------------------------------------------
+    # 未回答質問の一覧から回答対象を選択するための View。
+    #
+    # 役割:
+    # - 未回答ページをプルダウン候補へ変換
+    # - 選択されたページIDから QAnswerModal を起動
+    # ------------------------------------------------------------
     # 未回答質問用の番号選択プルダウン
 
     def __init__(self, pages):
+        # ------------------------------------------------------------
+        # 未回答質問の選択UI（Select）を構築する。
+        #
+        # 引数:
+        # - pages: 未回答ページ配列(list[dict])
+        #
+        # 出力:
+        # - なし（ViewにSelectを追加）
+        #
+        # 備考:
+        # DiscordのSelect上限に合わせ、候補は最大25件に制限する。
+        # ------------------------------------------------------------
         super().__init__(timeout=120)
         self.page_info = {}
 
@@ -631,6 +1063,15 @@ class AnswerSelectView(discord.ui.View):
         self.add_item(select)
 
     async def on_select(self, interaction: discord.Interaction):
+        # ------------------------------------------------------------
+        # プルダウン選択時に呼ばれ、回答入力モーダルを表示する。
+        #
+        # 引数:
+        # - interaction: Discord Interaction（選択結果を含む）
+        #
+        # 出力:
+        # - なし
+        # ------------------------------------------------------------
         # interaction.data にはSelectの選択結果が入る（max_values=1なので先頭）
         pid = interaction.data["values"][0]
         info = self.page_info[pid]
@@ -643,9 +1084,28 @@ class AnswerSelectView(discord.ui.View):
 
 
 class EditSelectView(discord.ui.View):
+    # ------------------------------------------------------------
+    # 回答済み質問の一覧から編集対象を選択するための View。
+    #
+    # 役割:
+    # - 回答済みページをプルダウン候補へ変換
+    # - 選択されたページIDから QEditModal を起動
+    # ------------------------------------------------------------
     # 回答済み質問用の番号選択プルダウン
 
     def __init__(self, pages):
+        # ------------------------------------------------------------
+        # 回答編集用の選択UI（Select）を構築する。
+        #
+        # 引数:
+        # - pages: 回答済みページ配列(list[dict])
+        #
+        # 出力:
+        # - なし（ViewにSelectを追加）
+        #
+        # 備考:
+        # DiscordのSelect上限に合わせ、候補は最大25件に制限する。
+        # ------------------------------------------------------------
         super().__init__(timeout=120)
         self.page_info = {}
 
@@ -670,6 +1130,15 @@ class EditSelectView(discord.ui.View):
         self.add_item(select)
 
     async def on_select(self, interaction: discord.Interaction):
+        # ------------------------------------------------------------
+        # プルダウン選択時に呼ばれ、回答編集モーダルを表示する。
+        #
+        # 引数:
+        # - interaction: Discord Interaction（選択結果を含む）
+        #
+        # 出力:
+        # - なし
+        # ------------------------------------------------------------
         # max_values=1なので先頭
         pid = interaction.data["values"][0]
         info = self.page_info[pid]
@@ -686,12 +1155,44 @@ class EditSelectView(discord.ui.View):
 # Q&Aコマンド用コマンド
 # ==============================
 class QACommands(commands.Cog):
+    # ------------------------------------------------------------
+    # Q&A 機能のスラッシュコマンドをまとめた Cog。
+    #
+    # 役割:
+    # - 未回答質問への回答導線（/q_answer）を提供
+    # - 回答済み質問の編集導線（/q_edit）を提供
+    # ------------------------------------------------------------
     def __init__(self, bot):
+        # ------------------------------------------------------------
+        # 関数解説:
+        # Cog 初期化時に Bot インスタンスを保持する。
+        #
+        # 引数:
+        # - bot: commands.Bot
+        #
+        # 出力:
+        # - なし
+        # ------------------------------------------------------------
         self.bot = bot
     
     # 回答用コマンドを定義
     @app_commands.command(name="q_answer", description="未回答の質問に回答します")
     async def q_answer(self, interaction: discord.Interaction):
+        # ------------------------------------------------------------
+        # 未回答質問への回答フローを開始するスラッシュコマンド。
+        #
+        # 処理概要:
+        # 1) 実行チャンネル制約を検証
+        # 2) 質問番号を補完
+        # 3) 未回答ページを取得
+        # 4) AnswerSelectView をエフェメラルで表示
+        #
+        # 引数:
+        # - interaction: Discord Interaction
+        #
+        # 出力:
+        # - なし
+        # ------------------------------------------------------------
         if not is_qa_channel(interaction):
             return await interaction.response.send_message(
                 f"❌ このコマンドは <#{QA_CHANNEL_ID}> でのみ実行できます。",
@@ -716,6 +1217,21 @@ class QACommands(commands.Cog):
     # 回答編集用コマンドを定義
     @app_commands.command(name="q_edit", description="回答済みの質問の回答を編集します")
     async def q_edit(self, interaction: discord.Interaction):
+        # ------------------------------------------------------------
+        # 回答済み質問の編集フローを開始するスラッシュコマンド。
+        #
+        # 処理概要:
+        # 1) 実行チャンネル制約を検証
+        # 2) 質問番号を補完
+        # 3) 回答済みページを取得
+        # 4) EditSelectView をエフェメラルで表示
+        #
+        # 引数:
+        # - interaction: Discord Interaction
+        #
+        # 出力:
+        # - なし
+        # ------------------------------------------------------------
         if not is_qa_channel(interaction):
             return await interaction.response.send_message(
                 f"❌ このコマンドは <#{QA_CHANNEL_ID}> でのみ実行できます。",
@@ -742,12 +1258,44 @@ class QACommands(commands.Cog):
 # ======================================================
 @tasks.loop(hours=24)
 async def auto_clean():
+    # ------------------------------------------------------------
+    # 関数解説:
+    # 定期的にイベントデータの自動クリーンアップを実行するタスク。
+    #
+    # 実行間隔:
+    # - 24時間ごと
+    #
+    # 処理内容:
+    # - delete_past_events() を呼び、
+    #   外部/内部DBのポリシーに従って古いイベントをアーカイブする
+    #
+    # 出力:
+    # - なし（副作用で Notion ページをアーカイブ）
+    # ------------------------------------------------------------
     # イベントの過去データ削除（24時間毎）
     delete_past_events()
 
 
 @tasks.loop(hours=6)
 async def auto_check_qa(bot: commands.Bot):
+    # ------------------------------------------------------------
+    # Q&A DB の変更を定期監視し、通知対象をDiscordへ送信するタスク。
+    #
+    # 引数:
+    # - bot: commands.Bot（通知送信用）
+    #
+    # 実行間隔:
+    # - 6時間ごと
+    #
+    # 処理概要:
+    # 1) 質問番号を補完
+    # 2) get_qa_changes() で差分抽出
+    # 3) 初回起動時は通知せず、キャッシュ初期化のみ実施
+    # 4) 2回目以降は未回答ページのみ通知
+    #
+    # 出力:
+    # - なし
+    # ------------------------------------------------------------
     # Q&A DBの変更監視（6時間毎）
     global FIRST_QA_RUN
 
@@ -775,8 +1323,25 @@ async def auto_check_qa(bot: commands.Bot):
 # Bot 本体
 # ======================================================
 class MyBot(commands.Bot):
+    # ------------------------------------------------------------
+    # Bot本体 クラス。
+    #
+    # 役割:
+    # - 起動時フックで Cog とスラッシュコマンドを登録
+    # - 既定の commands.Bot を用途に合わせて拡張
+    # ------------------------------------------------------------
     # コマンド登録
     async def setup_hook(self):
+        # ------------------------------------------------------------
+        # Bot 起動時に一度だけ呼ばれる初期化フック。
+        #
+        # 処理概要:
+        # 1) Q&A コマンド Cog を登録
+        # 2) スラッシュコマンドを Discord 側へ同期
+        #
+        # 出力:
+        # - なし
+        # ------------------------------------------------------------
         await self.add_cog(QACommands(self))
         await self.tree.sync()
         print("Slash commands synced")
@@ -791,6 +1356,20 @@ bot = MyBot(command_prefix="!", intents=intents)
 
 @bot.event
 async def on_ready():
+    # ------------------------------------------------------------
+    # Bot 接続完了時に実行されるイベントハンドラ。
+    #
+    # 処理概要:
+    # 1) キャッシュから FIRST_QA_RUN を復元
+    # 2) 質問番号の欠番補完を実行
+    # 3) 定期タスク（auto_clean / auto_check_qa）を起動
+    #
+    # 出力:
+    # - なし
+    #
+    # 備考:
+    # 再接続時の重複起動を避けるため、is_running() で起動状態を確認する。
+    # ------------------------------------------------------------
     global FIRST_QA_RUN
 
     print(f"Bot Ready as {bot.user}")
@@ -818,6 +1397,21 @@ async def on_ready():
 
 @bot.event
 async def on_scheduled_event_create(event):
+    # ------------------------------------------------------------
+    # Discord の Scheduled Event 作成時に呼ばれるイベントハンドラ。
+    #
+    # 処理概要:
+    # 1) Discordイベント情報を取得
+    # 2) Google Calendar へイベントを作成
+    # 3) 外部用Notion DBへ登録（定例会は除外）
+    # 4) 内部用Notion DBへ登録（定例会も含む）
+    #
+    # 引数:
+    # - event: Discord Scheduled Event
+    #
+    # 出力:
+    # - なし
+    # ------------------------------------------------------------
     """
     Discord のサーバーイベントが作成されたときに呼ばれる
     ここで Notion のイベントDBに登録する
@@ -866,6 +1460,21 @@ async def on_scheduled_event_create(event):
 
 @bot.event
 async def on_scheduled_event_update(before, after):
+    # ------------------------------------------------------------
+    # Discord の Scheduled Event 更新時に呼ばれるイベントハンドラ。
+    #
+    # 処理概要:
+    # 1) after.id をキーに Notion 側の対応ページを検索
+    # 2) 外部用DBを更新（定例会は除外）
+    # 3) 内部用DBを更新（定例会も含む）
+    #
+    # 引数:
+    # - before: 更新前イベント
+    # - after: 更新後イベント
+    #
+    # 出力:
+    # - なし
+    # ------------------------------------------------------------
     """
     Discord イベントが更新されたときに呼ばれる
     Notion 側で「メッセージID == after.id」のページを探して更新
@@ -923,6 +1532,20 @@ async def on_scheduled_event_update(before, after):
 
 @bot.event
 async def on_scheduled_event_delete(event):
+    # ------------------------------------------------------------
+    # Discord の Scheduled Event 削除時に呼ばれるイベントハンドラ。
+    #
+    # 処理概要:
+    # 1) event.id をキーに Notion 側の対応ページを検索
+    # 2) 外部用DBをアーカイブ（定例会は除外）
+    # 3) 内部用DBをアーカイブ（定例会も含む）
+    #
+    # 引数:
+    # - event: Discord Scheduled Event
+    #
+    # 出力:
+    # - なし
+    # ------------------------------------------------------------
     """
     Discord イベントが削除されたときに呼ばれる
     Notion 側の対応するページをアーカイブ

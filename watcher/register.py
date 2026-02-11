@@ -18,6 +18,21 @@ STATE_FILE = "gcal_watch_state.json"
 
 
 def load_service_account_info():
+    # ------------------------------------------------------------
+    # Google Service Account の認証情報(JSON/dict)を読み込んで返す。
+    #
+    # 引数:
+    # - なし（環境変数を参照）
+    # - GOOGLE_SERVICE_ACCOUNT_JSON
+    #   1) JSON文字列そのもの
+    #   2) JSONファイルのパス
+    # - GOOGLE_SERVICE_ACCOUNT_JSON_PATH
+    #   明示的なJSONファイルパス
+    #
+    # 出力:
+    # - 成功: service_account_info(dict)
+    # - 失敗: None
+    # ------------------------------------------------------------
     # JSON文字列またはJSONファイルからサービスアカウント情報を取得
     json_env = GOOGLE_SERVICE_ACCOUNT_JSON
     if json_env:
@@ -36,6 +51,19 @@ def load_service_account_info():
 
 
 def get_calendar_service():
+    # ------------------------------------------------------------
+    # Google Calendar API クライアントを生成して返す。
+    #
+    # 引数:
+    # - なし
+    #
+    # 出力:
+    # - 成功: Calendar API service オブジェクト
+    # - 失敗: None
+    #
+    # 備考:
+    # 認証情報を解決できない場合は None を返し、呼び出し元で終了判定する。
+    # ------------------------------------------------------------
     # Calendar APIクライアントを構築
     info = load_service_account_info()
     if not info:
@@ -45,6 +73,20 @@ def get_calendar_service():
 
 
 def build_watch_request(channel_id):
+    # ------------------------------------------------------------
+    # Calendar watch 登録用のリクエストボディを組み立てる。
+    #
+    # 引数:
+    # - channel_id: watch チャンネルID（一意文字列）
+    #
+    # 出力:
+    # - 成功: watch request dict
+    # - 失敗: None
+    #
+    # 備考:
+    # GCAL_PUBSUB_TOPIC がある場合は Pub/Sub 経由で通知し、
+    # 無い場合は GCAL_WEBHOOK_URL へ直接通知する。
+    # ------------------------------------------------------------
     # Pub/Subトピックがあればそれを使い、無ければWebhook直叩きで登録
     if GCAL_PUBSUB_TOPIC:
         return {
@@ -59,12 +101,36 @@ def build_watch_request(channel_id):
 
 
 def save_state(payload):
+    # ------------------------------------------------------------
+    # watch チャンネル情報をローカル状態ファイルへ保存する。
+    #
+    # 引数:
+    # - payload: channel_id / resource_id / expiration などの情報
+    #
+    # 出力:
+    # - なし
+    #
+    # 備考:
+    # renew.py が次回更新時に旧チャンネル停止と再登録に利用する。
+    # ------------------------------------------------------------
     # renew.py 用にチャンネル情報を保存
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
 
 def main():
+    # ------------------------------------------------------------
+    # Google Calendar watch の初回登録を実行するエントリポイント。
+    #
+    # 処理概要:
+    # 1) 必須設定（カレンダーID/認証情報）を検証
+    # 2) watch request を生成
+    # 3) events.watch() を実行
+    # 4) 返却されたチャンネル情報を state に保存
+    #
+    # 出力:
+    # - なし（watch 登録・状態保存）
+    # ------------------------------------------------------------
     # 初回のwatch登録（手動で1回実行）
     if not GOOGLE_CALENDAR_ID:
         raise SystemExit("GOOGLE_CALENDAR_ID is required")
@@ -79,6 +145,7 @@ def main():
     if not body:
         raise SystemExit("GCAL_PUBSUB_TOPIC or GCAL_WEBHOOK_URL is required")
 
+    # Google に watch 登録(resource_id は watch 内の監視対象リソースの識別子)
     response = service.events().watch(calendarId=GOOGLE_CALENDAR_ID, body=body).execute()
     save_state(
         {
