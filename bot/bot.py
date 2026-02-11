@@ -31,6 +31,9 @@ GOOGLE_SERVICE_ACCOUNT_JSON_PATH = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_PATH")
 
 # チャンネル紐付け
 QA_CHANNEL_ID = int(os.getenv("QA_CHANNEL_ID", 0))
+REMINDER_CHANNEL_ID = int(os.getenv("REMINDER_CHANNEL_ID", 0))
+REMINDER_ROLE_ID = int(os.getenv("REMINDER_ROLE_ID", 0))
+REMINDER_WINDOW_MINUTES = int(os.getenv("REMINDER_WINDOW_MINUTES", 15))
 
 # ==============================
 # 共通 Notion ヘッダ
@@ -572,6 +575,7 @@ def fetch_qa_db():
 
 #ローカルにjsonファイル作成
 CACHE_FILE = "notion_cache.json"
+REMINDER_CACHE_FILE = "reminder_cache.json"
 
 # キャッシュ読み込み
 def load_cache():
@@ -616,6 +620,46 @@ def save_cache(cache, first_run_flag=None):
         cache["_first_qa_run"] = first_run_flag
 
     with open(CACHE_FILE, "w", encoding="utf-8") as f:
+        json.dump(cache, f, ensure_ascii=False, indent=2)
+
+
+def load_reminder_cache():
+    # ------------------------------------------------------------
+    # 前日メンション送信済みイベントのキャッシュを読み込む。
+    #
+    # 引数:
+    # - なし
+    #
+    # 出力:
+    # - 成功: キャッシュdict（key=event_id, value=送信時刻ISO）
+    # - 失敗/未作成: 空dict {}
+    #
+    # 備考:
+    # JSON破損や想定外型の場合も空dictへフォールバックする。
+    # ------------------------------------------------------------
+    # 前日メンションの送信済みイベントを保持するキャッシュを読み込む
+    if not os.path.exists(REMINDER_CACHE_FILE):
+        return {}
+    try:
+        with open(REMINDER_CACHE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_reminder_cache(cache):
+    # ------------------------------------------------------------
+    # 前日メンション送信済みキャッシュをローカルJSONへ保存する。
+    #
+    # 引数:
+    # - cache: 保存対象のdict
+    #
+    # 出力:
+    # - なし
+    # ------------------------------------------------------------
+    # 前日メンションの送信済みイベントキャッシュを書き込む
+    with open(REMINDER_CACHE_FILE, "w", encoding="utf-8") as f:
         json.dump(cache, f, ensure_ascii=False, indent=2)
 
 # 新規 / 更新ページの検出
@@ -1253,6 +1297,58 @@ class QACommands(commands.Cog):
         )
 
 
+async def send_day_before_reminder(bot: commands.Bot, event) -> bool:
+    # ------------------------------------------------------------
+    # 指定イベントに対する前日リマインドを Discord へ1件送信する。
+    #
+    # 引数:
+    # - bot: commands.Bot（チャンネル取得/送信に利用）
+    # - event: Discord Scheduled Event
+    #
+    # 出力:
+    # - 成功: True
+    # - 失敗/スキップ: False
+    #
+    # 備考:
+    # - REMINDER_CHANNEL_ID / REMINDER_ROLE_ID が未設定なら送信しない
+    # - allowed_mentions でロールメンションのみ許可する
+    # ------------------------------------------------------------
+    # 前日メンションを1件送信する
+    if REMINDER_CHANNEL_ID == 0 or REMINDER_ROLE_ID == 0:
+        return False
+
+    channel = bot.get_channel(REMINDER_CHANNEL_ID)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(REMINDER_CHANNEL_ID)
+        except Exception as exc:
+            print("warn: failed to fetch reminder channel:", exc)
+            return False
+
+    start_iso = to_jst_iso(event.start_time)
+    display_date = format_display_date(start_iso)
+    description = event.description or "(内容なし)"
+    event_url = get_event_url(event) or ""
+
+    msg = (
+        f"🔔 <@&{REMINDER_ROLE_ID}> 明日開催のイベントがあります\n"
+        f"📌 **イベント名:** {event.name}\n"
+        f"🕒 **開始:** {display_date}\n"
+        f"**内容:** {description}\n"
+        f"{event_url}"
+    )
+
+    try:
+        await channel.send(
+            msg,
+            allowed_mentions=discord.AllowedMentions(roles=True, users=False, everyone=False),
+        )
+        return True
+    except Exception as exc:
+        print("warn: failed to send day-before reminder:", exc)
+        return False
+
+
 # ======================================================
 # 自動タスク
 # ======================================================
@@ -1317,6 +1413,67 @@ async def auto_check_qa(bot: commands.Bot):
     for ctype, page in changes:
         if get_answer(page) == "(回答なし)":
             await send_qa_notification(bot, ctype, page)
+
+
+@tasks.loop(minutes=10)
+async def auto_day_before_reminder(bot: commands.Bot):
+    # ------------------------------------------------------------
+    # 24時間後に開始するイベントを検出し、前日メンションを送信する定期タスク。
+    #
+    # 引数:
+    # - bot: commands.Bot
+    #
+    # 実行間隔:
+    # - 10分ごと
+    #
+    # 処理概要:
+    # 1) 24時間後〜24時間後+ウィンドウの時間帯を計算
+    # 2) 各ギルド(サーバー情報)の Scheduled Event を取得
+    # 3) 対象イベントを抽出
+    # 4) 未送信イベントだけ send_day_before_reminder() を実行
+    # 5) 送信成功分をキャッシュ保存
+    #
+    # 出力:
+    # - なし
+    # ------------------------------------------------------------
+    # Discordイベントの「開始24時間前」を検出し、指定ロールへメンション通知する
+    if REMINDER_CHANNEL_ID == 0 or REMINDER_ROLE_ID == 0:
+        return
+
+    now_utc = datetime.now(timezone.utc)
+    window_start = now_utc + timedelta(hours=24)
+    window_end = window_start + timedelta(minutes=max(1, REMINDER_WINDOW_MINUTES))
+
+    cache = load_reminder_cache()
+    cache_changed = False
+
+    for guild in bot.guilds:
+        try:
+            events = await guild.fetch_scheduled_events()
+        except Exception:
+            events = list(getattr(guild, "scheduled_events", []))
+
+        for event in events:
+            start_time = getattr(event, "start_time", None)
+            if not start_time:
+                continue
+            if start_time.tzinfo is None:
+                start_time = start_time.replace(tzinfo=timezone.utc)
+
+            if not (window_start <= start_time < window_end):
+                continue
+
+            event_id = str(event.id)
+            if event_id in cache:
+                continue
+
+            sent = await send_day_before_reminder(bot, event)
+            if sent:
+                cache[event_id] = now_utc.isoformat()
+                cache_changed = True
+
+    if cache_changed:
+        save_reminder_cache(cache)
 
 
 # ======================================================
@@ -1387,6 +1544,9 @@ async def on_ready():
 
     if not auto_check_qa.is_running():
         auto_check_qa.start(bot)
+
+    if not auto_day_before_reminder.is_running():
+        auto_day_before_reminder.start(bot)
 
     print("All background tasks started.")
 
