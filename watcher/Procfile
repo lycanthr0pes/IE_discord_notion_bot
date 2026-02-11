@@ -1,1 +1,1 @@
-worker: python -u register.py
+worker: python renew.py
