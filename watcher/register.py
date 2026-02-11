@@ -23,6 +23,7 @@ WATCH_CHANNEL_ID = os.getenv("WATCH_CHANNEL_ID")
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
 STATE_FILE = "gcal_watch_state.json"
 
+print("register.py started", flush=True)
 
 def load_service_account_info():
     # ------------------------------------------------------------
