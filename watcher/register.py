@@ -169,3 +169,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+print("register.py complate", flush=True)
