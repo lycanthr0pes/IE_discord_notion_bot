@@ -989,7 +989,7 @@ def find_discord_event_id_by_google_marker(google_event_id):
     return None
 
 
-def sync_to_discord(event, notion_page):
+def sync_to_discord(event, notion_page, fallback_notion_page=None):
     # ------------------------------------------------------------
     # Googleイベントを Discord Scheduled Event へ同期する。
     #
@@ -1014,6 +1014,11 @@ def sync_to_discord(event, notion_page):
         return None
 
     notion_discord_id = notion_extract_rich_text(notion_page, NOTION_PROP_MESSAGE_ID)
+    if not notion_discord_id and fallback_notion_page:
+        notion_discord_id = notion_extract_rich_text(
+            fallback_notion_page,
+            NOTION_PROP_MESSAGE_ID,
+        )
     mapped_discord_id = get_discord_event_id_by_google_id(google_event_id)
     discord_event_id = notion_discord_id or mapped_discord_id
 
@@ -1031,6 +1036,17 @@ def sync_to_discord(event, notion_page):
                     google_event_id,
                     discord_event_id,
                 )
+            else:
+                logger.warning(
+                    "Discord delete failed by Google cancel: google_event_id=%s discord_event_id=%s",
+                    google_event_id,
+                    discord_event_id,
+                )
+        else:
+            logger.warning(
+                "Discord delete skipped: discord_event_id unresolved google_event_id=%s",
+                google_event_id,
+            )
         remove_discord_event_id_by_google_id(google_event_id)
         return None
 
@@ -1110,13 +1126,16 @@ def upsert_event(event):
                 set_notion_page_id_by_google_id(google_event_id, external_page["id"], "external")
 
     if event.get("status") == "cancelled":
+        # Discord削除IDの解決に使うため、archive前にページ参照を保持する。
+        discord_hint_page = page
+        discord_fallback_page = external_page
         if page:
             notion_archive_page(page)
             remove_notion_page_id_by_google_id(google_event_id, "internal")
         if external_page:
             notion_archive_page(external_page)
             remove_notion_page_id_by_google_id(google_event_id, "external")
-        sync_to_discord(event, page)
+        sync_to_discord(event, discord_hint_page, fallback_notion_page=discord_fallback_page)
         return
 
     name = event.get("summary") or "(no title)"
