@@ -541,6 +541,25 @@ def notion_find_by_google_event_id(google_event_id, db_id=None):
     return results[0] if results else None
 
 
+def notion_find_by_message_id(message_id, db_id):
+    # 指定DBで「メッセージID == message_id」のページを1件検索する。
+    if not db_id or not message_id:
+        return None
+    url = f"https://api.notion.com/v1/databases/{db_id}/query"
+    data = {
+        "filter": {
+            "property": NOTION_PROP_MESSAGE_ID,
+            "rich_text": {"equals": str(message_id)},
+        }
+    }
+    res = requests.post(url, headers=headers, json=data, timeout=30)
+    if res.status_code != 200:
+        logger.error("Notion query by message_id error: %s", res.text)
+        return None
+    results = res.json().get("results", [])
+    return results[0] if results else None
+
+
 def notion_update_event(
     page_id,
     name=None,
@@ -609,6 +628,7 @@ def notion_create_event(
     google_event_id,
     location=None,
     db_id=None,
+    message_id=None,
 ):
     # ------------------------------------------------------------
     # Notion DB にイベントページを新規作成する。
@@ -629,15 +649,19 @@ def notion_create_event(
             NOTION_PROP_TITLE: {"title": [{"text": {"content": name}}]},
             NOTION_PROP_CONTENT: {"rich_text": [{"text": {"content": content}}]},
             NOTION_PROP_DATE: {"date": date_prop},
-            NOTION_PROP_MESSAGE_ID: {"rich_text": [{"text": {"content": ""}}]},
+            NOTION_PROP_MESSAGE_ID: {
+                "rich_text": [{"text": {"content": str(message_id) if message_id is not None else ""}}]
+            },
             NOTION_PROP_CREATOR_ID: {"rich_text": [{"text": {"content": str(creator_id)}}]},
             NOTION_PROP_PAGE_ID: {"rich_text": [{"text": {"content": ""}}]},
-            NOTION_PROP_EVENT_URL: {"url": event_url},
-            NOTION_PROP_GOOGLE_EVENT_ID: {
-                "rich_text": [{"text": {"content": str(google_event_id)}}]
-            },
         },
     }
+    if event_url is not None:
+        data["properties"][NOTION_PROP_EVENT_URL] = {"url": event_url}
+    if google_event_id is not None:
+        data["properties"][NOTION_PROP_GOOGLE_EVENT_ID] = {
+            "rich_text": [{"text": {"content": str(google_event_id)}}]
+        }
     if location is not None and NOTION_LOCATION_PROPERTY:
         data["properties"][NOTION_LOCATION_PROPERTY] = {
             "rich_text": [{"text": {"content": str(location)}}]
@@ -985,8 +1009,8 @@ def upsert_event(event):
     page = notion_find_by_google_event_id(google_event_id, db_id=NOTION_EVENT_INTERNAL_DB_ID)
     external_page = None
     if NOTION_EVENT_EXTERNAL_DB_ID:
-        external_page = notion_find_by_google_event_id(
-            google_event_id,
+        external_page = notion_find_by_message_id(
+            message_id=google_event_id,
             db_id=NOTION_EVENT_EXTERNAL_DB_ID,
         )
 
@@ -1029,6 +1053,7 @@ def upsert_event(event):
             google_event_id=google_event_id,
             location=location,
             db_id=NOTION_EVENT_INTERNAL_DB_ID,
+            message_id="",
         )
         if not page_id:
             return
@@ -1042,7 +1067,7 @@ def upsert_event(event):
                 name=name,
                 content=content,
                 date_prop=date_prop,
-                google_event_id=google_event_id,
+                message_id=google_event_id,
             )
             if ext_ok:
                 logger.info("Notion external updated: %s (%s)", name, google_event_id)
@@ -1053,9 +1078,10 @@ def upsert_event(event):
                 date_prop=date_prop,
                 creator_id=creator_id,
                 event_url=None,
-                google_event_id=google_event_id,
+                google_event_id=None,
                 location=None,
                 db_id=NOTION_EVENT_EXTERNAL_DB_ID,
+                message_id=google_event_id,
             )
             if ext_page_id:
                 logger.info("Notion external created: %s (%s)", name, google_event_id)
