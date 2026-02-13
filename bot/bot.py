@@ -16,25 +16,33 @@ logging.basicConfig(
 )
 logger = logging.getLogger("bot")
 
+# 空文字や前後空白込みの環境変数を安全に扱う
+def getenv_clean(name: str, default=None):
+    value = os.getenv(name, default)
+    if isinstance(value, str):
+        value = value.strip()
+        return value if value else default
+    return value
+
 # ==============================
 # 環境変数
 # ==============================
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-NOTION_TOKEN = os.getenv("NOTION_TOKEN")
+DISCORD_TOKEN = getenv_clean("DISCORD_TOKEN")
+NOTION_TOKEN = getenv_clean("NOTION_TOKEN")
 
 # Q&A 用（質問 / 回答 / 質問番号）
-NOTION_QA_DB_ID = os.getenv("NOTION_QA_ID")
+NOTION_QA_DB_ID = getenv_clean("NOTION_QA_ID")
 
 # イベント用（外部用: イベント名 / 内容 / 日時 / メッセージID / 作成者ID / ページID）
-NOTION_EVENT_EXTERNAL_DB_ID = os.getenv("NOTION_EVENT_ID")
+NOTION_EVENT_EXTERNAL_DB_ID = getenv_clean("NOTION_EVENT_ID")
 
 # イベント用（内部用: イベント名 / 内容 / 日時 / メッセージID / 作成者ID / ページID / イベントURL）
-NOTION_EVENT_INTERNAL_DB_ID = os.getenv("NOTION_EVENT_INTERNAL_ID")
+NOTION_EVENT_INTERNAL_DB_ID = getenv_clean("NOTION_EVENT_INTERNAL_ID")
 
 # Googleカレンダー連携
-GOOGLE_CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID")
-GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
-GOOGLE_SERVICE_ACCOUNT_JSON_PATH = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_PATH")
+GOOGLE_CALENDAR_ID = getenv_clean("GOOGLE_CALENDAR_ID")
+GOOGLE_SERVICE_ACCOUNT_JSON = getenv_clean("GOOGLE_SERVICE_ACCOUNT_JSON")
+GOOGLE_SERVICE_ACCOUNT_JSON_PATH = getenv_clean("GOOGLE_SERVICE_ACCOUNT_JSON_PATH")
 
 # チャンネル紐付け
 QA_CHANNEL_ID = int(os.getenv("QA_CHANNEL_ID", 0))
