@@ -15,6 +15,7 @@ Discord と Google Calendar / Notion を同期する Bot です。
   - 内部DBに保存済みの GoogleイベントID があれば Google Calendar も更新
 - イベント削除時:
   - Notion 外部DB / 内部DB をアーカイブ
+  - 内部DBに保存済みの GoogleイベントID があれば Google Calendar も削除
 
 ### 2) Google Calendar -> Notion (webhook-only)
 
