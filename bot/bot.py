@@ -285,6 +285,22 @@ def google_update_event(google_event_id, name, description, start_dt, end_dt, lo
         return None
 
 
+def google_delete_event(google_event_id):
+    # Google Calendar の既存イベントを削除する。
+    service = get_google_calendar_service()
+    if not service or not google_event_id:
+        return False
+    try:
+        service.events().delete(
+            calendarId=GOOGLE_CALENDAR_ID,
+            eventId=google_event_id,
+        ).execute()
+        return True
+    except Exception as exc:
+        logger.error("Googleカレンダー削除失敗(event_id=%s): %s", google_event_id, exc)
+        return False
+
+
 # ======================================================
 # イベント管理機能（Notion 側）
 # ======================================================
@@ -1893,6 +1909,16 @@ async def on_scheduled_event_delete(event):
     # 内部用DB: 定例会も含めて削除
     internal_target = find_event_page(NOTION_EVENT_INTERNAL_DB_ID, eid)
     if internal_target:
+        internal_page = notion_get_event(internal_target["id"])
+        google_event_id = get_google_event_id_from_notion_page(internal_page)
+        if google_event_id:
+            deleted = google_delete_event(google_event_id)
+            if deleted:
+                logger.info("Discordイベント削除 -> Googleカレンダー削除: %s", event.name)
+            else:
+                logger.error("Googleカレンダー イベント削除に失敗しました。")
+        else:
+            logger.warning("GoogleイベントIDが見つからないためGoogle削除をスキップします: %s", event.name)
         if notion_delete_event(internal_target["id"]):
             logger.info("Discordイベント削除 -> 内部用Notion削除: %s", event.name)
         else:
