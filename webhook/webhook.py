@@ -6,9 +6,7 @@ from collections import deque
 
 import requests
 from flask import Flask, request
-from google.auth.transport import requests as google_auth_requests
 from google.oauth2 import service_account
-from google.oauth2 import id_token
 from googleapiclient.discovery import build
 
 logging.basicConfig(
@@ -30,6 +28,7 @@ def getenv_clean(name: str, default=None):
 
 NOTION_TOKEN = getenv_clean("NOTION_TOKEN")
 NOTION_EVENT_INTERNAL_DB_ID = getenv_clean("NOTION_EVENT_INTERNAL_ID")
+NOTION_LOCATION_PROPERTY = getenv_clean("NOTION_LOCATION_PROPERTY", "場所")
 
 GOOGLE_CALENDAR_ID = getenv_clean("GOOGLE_CALENDAR_ID")
 GOOGLE_SERVICE_ACCOUNT_JSON = getenv_clean("GOOGLE_SERVICE_ACCOUNT_JSON")
@@ -40,14 +39,6 @@ STATE_DIR = getenv_clean("STATE_DIR", ".")
 SYNC_STATE_FILE = os.path.join(STATE_DIR, "gcal_sync_state.json")
 DEDUPE_STATE_FILE = os.path.join(STATE_DIR, "gcal_recent_messages.json")
 DEDUPE_MAX_IDS = int(getenv_clean("DEDUPE_MAX_IDS", "1000"))
-PUBSUB_PUSH_AUDIENCE = getenv_clean("PUBSUB_PUSH_AUDIENCE")
-PUBSUB_PUSH_SERVICE_ACCOUNT = getenv_clean("PUBSUB_PUSH_SERVICE_ACCOUNT")
-PUBSUB_AUTH_STRICT = getenv_clean("PUBSUB_AUTH_STRICT", "false").lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
 
 headers = {
     "Authorization": f"Bearer {NOTION_TOKEN}",
@@ -112,27 +103,6 @@ def register_message_id(message_id):
     _processed_message_set.add(message_id)
     save_recent_message_ids()
     return False
-
-
-def verify_pubsub_push_auth():
-    auth_header = request.headers.get("Authorization", "")
-    if not auth_header:
-        if PUBSUB_PUSH_AUDIENCE:
-            return False, "missing Authorization header"
-        return True, "no auth header"
-    if not auth_header.startswith("Bearer "):
-        return False, "invalid Authorization header"
-    token = auth_header.split(" ", 1)[1].strip()
-    if not PUBSUB_PUSH_AUDIENCE:
-        return True, "auth present but PUBSUB_PUSH_AUDIENCE not configured"
-    try:
-        req = google_auth_requests.Request()
-        info = id_token.verify_oauth2_token(token, req, PUBSUB_PUSH_AUDIENCE)
-        if PUBSUB_PUSH_SERVICE_ACCOUNT and info.get("email") != PUBSUB_PUSH_SERVICE_ACCOUNT:
-            return False, "service account email mismatch"
-        return True, "verified"
-    except Exception as exc:
-        return False, f"jwt verify failed: {exc}"
 
 
 def load_service_account_info():
@@ -313,6 +283,7 @@ def notion_update_event(
     event_url=None,
     google_event_id=None,
     page_uuid=None,
+    location=None,
 ):
     props = {}
     if name is not None:
@@ -327,6 +298,8 @@ def notion_update_event(
         props["GoogleイベントID"] = {"rich_text": [{"text": {"content": str(google_event_id)}}]}
     if page_uuid is not None:
         props["ページID"] = {"rich_text": [{"text": {"content": str(page_uuid)}}]}
+    if location is not None and NOTION_LOCATION_PROPERTY:
+        props[NOTION_LOCATION_PROPERTY] = {"rich_text": [{"text": {"content": str(location)}}]}
 
     res = requests.patch(
         f"https://api.notion.com/v1/pages/{page_id}",
@@ -340,7 +313,7 @@ def notion_update_event(
     return True
 
 
-def notion_create_event(name, content, date_prop, creator_id, event_url, google_event_id):
+def notion_create_event(name, content, date_prop, creator_id, event_url, google_event_id, location=None):
     url = "https://api.notion.com/v1/pages"
     data = {
         "parent": {"database_id": NOTION_EVENT_INTERNAL_DB_ID},
@@ -355,6 +328,10 @@ def notion_create_event(name, content, date_prop, creator_id, event_url, google_
             "GoogleイベントID": {"rich_text": [{"text": {"content": str(google_event_id)}}]},
         },
     }
+    if location is not None and NOTION_LOCATION_PROPERTY:
+        data["properties"][NOTION_LOCATION_PROPERTY] = {
+            "rich_text": [{"text": {"content": str(location)}}]
+        }
     res = requests.post(url, headers=headers, json=data, timeout=30)
     if res.status_code not in (200, 201):
         logger.error("Notion create error: %s", res.text)
@@ -393,6 +370,7 @@ def upsert_event_to_notion(event):
     name = event.get("summary") or "(名称なし)"
     content = event.get("description") or "(内容なし)"
     event_url = event.get("htmlLink")
+    location = event.get("location")
     creator_id = event.get("creator", {}).get("email") or "unknown"
     date_prop = build_notion_date(event)
     if not date_prop:
@@ -407,6 +385,7 @@ def upsert_event_to_notion(event):
             date_prop=date_prop,
             event_url=event_url,
             google_event_id=google_event_id,
+            location=location,
         )
         if ok:
             logger.info("Notion updated: %s (%s)", name, google_event_id)
@@ -419,6 +398,7 @@ def upsert_event_to_notion(event):
         creator_id=creator_id,
         event_url=event_url,
         google_event_id=google_event_id,
+        location=location,
     )
     if page_id:
         logger.info("Notion created: %s (%s)", name, google_event_id)
@@ -464,30 +444,12 @@ def sync_calendar_to_notion():
 
 ensure_state_dir()
 load_recent_message_ids()
-if not PUBSUB_PUSH_AUDIENCE:
-    logger.warning(
-        "PUBSUB_PUSH_AUDIENCE is not set. Webhook auth verification is effectively disabled."
-    )
-if not PUBSUB_AUTH_STRICT:
-    logger.warning("PUBSUB_AUTH_STRICT is false. Invalid auth requests are allowed.")
 
 
 @app.route("/gcal/webhook", methods=["POST"])
 def gcal_webhook():
-    ok, reason = verify_pubsub_push_auth()
-    if not ok and PUBSUB_AUTH_STRICT:
-        logger.warning("Webhook auth rejected (strict): %s", reason)
-        return "unauthorized", 401
-    if not ok:
-        logger.warning("Webhook auth failed but allowed (non-strict): %s", reason)
-
-    body = request.get_json(silent=True) or {}
-    pubsub_message = body.get("message", {}) if isinstance(body, dict) else {}
-    pubsub_message_id = pubsub_message.get("messageId") or pubsub_message.get("message_id")
-    if pubsub_message_id and register_message_id(f"pubsub:{pubsub_message_id}"):
-        logger.info("Duplicate Pub/Sub message skipped id=%s", pubsub_message_id)
-        return "", 204
-
+    # Webhook-only workflow:
+    # receive Google Calendar watch notification directly, then sync to Notion.
     goog_channel = request.headers.get("X-Goog-Channel-ID")
     goog_message_num = request.headers.get("X-Goog-Message-Number")
     goog_state = request.headers.get("X-Goog-Resource-State")
@@ -498,13 +460,10 @@ def gcal_webhook():
             return "", 204
 
     logger.info(
-        "Webhook received mode=%s ch=%s state=%s msg=%s pubsub_id=%s auth=%s",
-        "pubsub" if pubsub_message_id else "direct",
+        "Webhook received mode=direct ch=%s state=%s msg=%s",
         goog_channel,
         goog_state,
         goog_message_num,
-        pubsub_message_id,
-        reason,
     )
     synced = sync_calendar_to_notion()
     if not synced:

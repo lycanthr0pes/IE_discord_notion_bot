@@ -96,7 +96,7 @@ _google_service = None
 
 def load_service_account_info():
     # ------------------------------------------------------------
-    # Google Service Account の認証情報(json/dict)を読み込んで返す。
+    # Google Service Account の認証情報(JSON/dict)を読み込んで返す。
     #
     # 入力:
     # - 環境変数を参照
@@ -209,7 +209,7 @@ def validate_google_calendar_connection():
         )
         return False
 
-def google_add_event(name, description, start_dt, end_dt):
+def google_add_event(name, description, start_dt, end_dt, location=None):
     # ------------------------------------------------------------
     # Discordのイベント情報をGoogle Calendarへ登録する。
     #
@@ -218,6 +218,7 @@ def google_add_event(name, description, start_dt, end_dt):
     # - description: 予定説明
     # - start_dt: 開始日時(datetime)
     # - end_dt: 終了日時(datetime)
+    # - location: 場所情報（任意）
     #
     # 出力:
     # - 成功: Google Calendar API の insert レスポンス(dict)
@@ -244,6 +245,8 @@ def google_add_event(name, description, start_dt, end_dt):
         "start": {"dateTime": start_iso, "timeZone": "Asia/Tokyo"},
         "end": {"dateTime": end_iso, "timeZone": "Asia/Tokyo"},
     }
+    if location:
+        body["location"] = str(location)
     try:
         # Calendar に予定を作成し、APIレスポンスを返す
         return (
@@ -256,13 +259,47 @@ def google_add_event(name, description, start_dt, end_dt):
         return None
 
 
+def google_update_event(google_event_id, name, description, start_dt, end_dt, location=None):
+    # Google Calendar の既存イベントを更新する。
+    service = get_google_calendar_service()
+    if not service or not google_event_id:
+        return None
+    start_iso = to_jst_iso(start_dt)
+    end_iso = to_jst_iso(end_dt)
+    body = {
+        "summary": name,
+        "description": description,
+        "start": {"dateTime": start_iso, "timeZone": "Asia/Tokyo"},
+        "end": {"dateTime": end_iso, "timeZone": "Asia/Tokyo"},
+    }
+    if location:
+        body["location"] = str(location)
+    try:
+        return (
+            service.events()
+            .patch(calendarId=GOOGLE_CALENDAR_ID, eventId=google_event_id, body=body)
+            .execute()
+        )
+    except Exception as exc:
+        logger.error("Googleカレンダー更新失敗(event_id=%s): %s", google_event_id, exc)
+        return None
+
+
 # ======================================================
 # イベント管理機能（Notion 側）
 # ======================================================
 
 # イベントをNotionに新規作成（jsonを作成し送信）
 def notion_add_event(
-    db_id, name, content, date_iso, message_id, creator_id, event_url=None, google_event_id=None
+    db_id,
+    name,
+    content,
+    date_iso,
+    message_id,
+    creator_id,
+    event_url=None,
+    google_event_id=None,
+    location=None,
 ):
     # ------------------------------------------------------------
     # Notion DB にイベントページを新規作成する。
@@ -310,6 +347,10 @@ def notion_add_event(
         data["properties"]["GoogleイベントID"] = {
             "rich_text": [{"text": {"content": str(google_event_id)}}]
         }
+    if location is not None:
+        data["properties"]["場所"] = {
+            "rich_text": [{"text": {"content": str(location)}}]
+        }
     res = requests.post(url, headers=headers, json=data)
     if res.status_code not in (200, 201):
         # ログ出力
@@ -349,6 +390,7 @@ def notion_update_event(
     page_uuid=None,
     event_url=None,
     google_event_id=None,
+    location=None,
 ):
     # ------------------------------------------------------------
     # 既存のNotionイベントページを部分更新する。
@@ -382,6 +424,8 @@ def notion_update_event(
         props["GoogleイベントID"] = {
             "rich_text": [{"text": {"content": str(google_event_id)}}]
         }
+    if location is not None:
+        props["場所"] = {"rich_text": [{"text": {"content": str(location)}}]}
 
     res = requests.patch(
         f"https://api.notion.com/v1/pages/{page_id}",
@@ -394,7 +438,6 @@ def notion_update_event(
 # イベントをNotionからアーカイブ扱いで削除する
 def notion_delete_event(page_id):
     # ------------------------------------------------------------
-    # 関数解説:
     # Notionページをアーカイブ扱いで削除する（archived=True）。
     #
     # 引数:
@@ -580,6 +623,41 @@ def get_event_url(event) -> str:
     guild_id = getattr(event, "guild_id", None)
     if guild_id:
         return f"https://discord.com/events/{guild_id}/{event.id}"
+    return None
+
+
+def get_event_location(event) -> str:
+    # Discord Scheduled Event の場所情報を取得する。
+    # event.location を優先し、無ければ entity_metadata.location を参照する。
+    location = getattr(event, "location", None)
+    if location:
+        text = str(location).strip()
+        if text:
+            return text
+    metadata = getattr(event, "entity_metadata", None)
+    meta_location = getattr(metadata, "location", None) if metadata else None
+    if meta_location:
+        text = str(meta_location).strip()
+        if text:
+            return text
+    return None
+
+
+def get_google_event_id_from_notion_page(page) -> str:
+    # Notionページから GoogleイベントID を取り出す。
+    if not page:
+        return None
+    props = page.get("properties", {})
+    rich = props.get("GoogleイベントID", {}).get("rich_text", [])
+    if not rich:
+        return None
+    node = rich[0]
+    plain = node.get("plain_text")
+    if plain:
+        return str(plain).strip() or None
+    content = node.get("text", {}).get("content")
+    if content:
+        return str(content).strip() or None
     return None
 
 
@@ -1387,10 +1465,7 @@ async def send_day_before_reminder(bot: commands.Bot, event) -> bool:
     event_url = get_event_url(event) or ""
 
     msg = (
-        f"🔔 <@&{REMINDER_ROLE_ID}> 明日開催のイベントがあります\n"
-        f"📌 **イベント名:** {event.name}\n"
-        f"🕒 **開始:** {display_date}\n"
-        f"**内容:** {description}\n"
+        f"🔔 <@&{REMINDER_ROLE_ID}> 明日開催のイベントがあります 🔔\n"
         f"{event_url}"
     )
 
@@ -1637,6 +1712,7 @@ async def on_scheduled_event_create(event):
     description = event.description or "(内容なし)"
     start_iso = to_jst_iso(event.start_time)
     event_url = get_event_url(event)
+    event_location = get_event_location(event)
     creator_id = (
         event.creator_id
         or (event.creator.id if event.creator else "unknown")
@@ -1644,7 +1720,13 @@ async def on_scheduled_event_create(event):
 
     # Discordイベント作成時にGoogleカレンダーへ登録（終了時刻が無い場合は1時間後）
     end_time = event.end_time or (event.start_time + timedelta(hours=1))
-    google_event = google_add_event(name, description, event.start_time, end_time)
+    google_event = google_add_event(
+        name,
+        description,
+        event.start_time,
+        end_time,
+        location=event_location,
+    )
     google_event_id = google_event.get("id") if google_event else None
 
     # 外部用DB: 定例会は除外
@@ -1670,6 +1752,7 @@ async def on_scheduled_event_create(event):
         creator_id=creator_id,
         event_url=event_url,
         google_event_id=google_event_id,
+        location=event_location,
     )
 
     logger.info("Discordイベント作成 -> Notion登録: %s", name)
@@ -1712,6 +1795,29 @@ async def on_scheduled_event_update(before, after):
     new_name = after.name
     new_content = after.description or "(内容なし)"
     new_date_iso = to_jst_iso(after.start_time)
+    new_location = get_event_location(after)
+    new_end_time = after.end_time or (after.start_time + timedelta(hours=1))
+
+    # 内部DBに保存した GoogleイベントID があれば、Googleカレンダー側も更新する。
+    google_event_id = None
+    if internal_target:
+        internal_page = notion_get_event(internal_target["id"])
+        google_event_id = get_google_event_id_from_notion_page(internal_page)
+    if google_event_id:
+        google_updated = google_update_event(
+            google_event_id=google_event_id,
+            name=new_name,
+            description=new_content,
+            start_dt=after.start_time,
+            end_dt=new_end_time,
+            location=new_location,
+        )
+        if google_updated:
+            logger.info("Discordイベント更新 -> Googleカレンダー更新: %s", new_name)
+        else:
+            logger.error("Googleカレンダー イベント更新に失敗しました。")
+    else:
+        logger.warning("GoogleイベントIDが見つからないためGoogle更新をスキップします: %s", new_name)
 
     if target:
         page_id = target["id"]
@@ -1737,6 +1843,7 @@ async def on_scheduled_event_update(before, after):
             content=new_content,
             date_iso=new_date_iso,
             event_url=event_url,
+            location=new_location,
         )
         if ok:
             logger.info("Discordイベント更新 -> 内部用Notion更新: %s", new_name)

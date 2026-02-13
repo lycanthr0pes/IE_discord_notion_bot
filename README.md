@@ -1,36 +1,72 @@
-# ワークフロー
+# IE Discord Notion Bot
 
-## 1. Discordイベント → Notion外部用/内部用
-- Discordでイベント作成
-- Botがイベント作成を検知
-- 外部用DBには定例会以外を登録
-- 内部用DBには定例会も含めて登録（イベントURL付き）
+このリポジトリは以下の 2 つの連携を提供します。
 
-## 2. Discordイベント → Googleカレンダー
-- Discordイベント作成時、BotがGoogleカレンダーへ予定を作成
-- 返却されたGoogleイベントIDを内部用DBに保存
+1. Discord Scheduled Event -> Google Calendar / Notion
+2. Google Calendar -> Notion（Webhook 直送）
 
-## 3. Googleカレンダー → Notion内部用
-- Calendar watch が変更を検知
-- Pub/SubからWebhookへ通知
-- Webhookが差分取得し、Notion内部用DBへ作成/更新/アーカイブ
+## Workflow
 
-## 4. イベント更新/削除の同期
-- Discordイベント更新時はNotion外部用/内部用を更新
-- Discordイベント削除時はNotion外部用/内部用をアーカイブ
+### 1) Discord -> Google Calendar / Notion
 
-## 5. 内部用DBの自動アーカイブ
-- イベント終了時刻を過ぎたら内部用DBをアーカイブ
-- 外部用DBは30日以上前のイベントをアーカイブ
+- `bot/bot.py` が Discord Scheduled Event を検知
+- Google Calendar にイベントを作成
+- Notion（内部/外部DB）へイベントを反映
 
-## 6. Q&A機能
-- NotionのQ&A DBを監視して新規/更新を検知
-- 未回答の質問だけ通知
-- Slashコマンドで回答・編集
-- 回答保存/更新時に本人だけ見える形で再送
+### 2) Google Calendar -> Notion（Webhook-only）
 
-## 7. 前日メンション機能（Discord）
-- Botが定期的にDiscordのScheduled Eventを確認
-- 「開始24時間前〜24時間前+指定分」のイベントを検出
-- 指定チャンネルで指定ロールへメンション通知
-- 送信済みイベントはキャッシュで管理し、重複通知を防止
+- `watcher/register.py` または `watcher/renew.py` が Google Calendar watch を登録
+- 通知先は `GCAL_WEBHOOK_URL`（Webhook 直送）
+- `webhook/webhook.py` が `/gcal/webhook` を受信
+- 受信時に Google Calendar の更新イベントを取得し、Notion 内部DBを upsert
+
+## Services
+
+- `bot`:
+  - Discord 連携本体
+- `watcher`:
+  - watch 登録/更新ジョブ
+- `webhook`:
+  - Google Calendar 通知受信 + Notion 同期
+
+## Command Features
+
+### Discord Slash Commands
+
+- `/q_answer`
+  - 未回答の質問を選択して回答を登録
+  - 実行チャンネルは `QA_CHANNEL_ID` で制限
+- `/q_edit`
+  - 回答済みの質問を選択して回答を編集
+  - 実行チャンネルは `QA_CHANNEL_ID` で制限
+
+### Bot Event Sync
+
+- Discord Scheduled Event 作成時
+  - Google Calendar にイベント作成
+  - Notion 外部/内部 DB に登録
+- Discord Scheduled Event 更新時
+  - Notion 外部/内部 DB を更新
+- Discord Scheduled Event 削除時
+  - Notion 外部/内部 DB をアーカイブ
+
+### Scheduled Tasks
+
+- `auto_clean`（24時間ごと）
+  - 古いイベントを Notion からアーカイブ
+- `auto_check_qa`（6時間ごと）
+  - Q&A DB の差分を検知して未回答を通知
+- `auto_day_before_reminder`（10分ごと）
+  - 開始24時間前の Discord イベントを検知しメンション通知
+  
+## Operation
+
+1. `webhook` をデプロイして URL を確定
+2. `watcher` の `GCAL_WEBHOOK_URL` に `https://<webhook-domain>/gcal/webhook` を設定
+3. `watcher/register.py` を 1 回実行して watch を初期登録
+4. 定期的に `watcher/renew.py` を実行して watch を更新
+
+## Health Check
+
+- `GET /health` -> `ok`
+- `GET/POST /gcal/sync` -> 手動同期
