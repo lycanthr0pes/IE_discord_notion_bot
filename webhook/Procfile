@@ -1,1 +1,1 @@
-worker: python renew.py
+web: python webhook.py

@@ -16,12 +16,19 @@ logger = logging.getLogger("webhook")
 
 app = Flask(__name__)
 
-NOTION_TOKEN = os.getenv("NOTION_TOKEN")
-NOTION_EVENT_INTERNAL_DB_ID = os.getenv("NOTION_EVENT_INTERNAL_ID")
+def getenv_clean(name: str, default=None):
+    value = os.getenv(name, default)
+    if isinstance(value, str):
+        value = value.strip()
+        return value if value else default
+    return value
 
-GOOGLE_CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID")
-GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
-GOOGLE_SERVICE_ACCOUNT_JSON_PATH = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_PATH")
+NOTION_TOKEN = getenv_clean("NOTION_TOKEN")
+NOTION_EVENT_INTERNAL_DB_ID = getenv_clean("NOTION_EVENT_INTERNAL_ID")
+
+GOOGLE_CALENDAR_ID = getenv_clean("GOOGLE_CALENDAR_ID")
+GOOGLE_SERVICE_ACCOUNT_JSON = getenv_clean("GOOGLE_SERVICE_ACCOUNT_JSON")
+GOOGLE_SERVICE_ACCOUNT_JSON_PATH = getenv_clean("GOOGLE_SERVICE_ACCOUNT_JSON_PATH")
 
 SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
 SYNC_STATE_FILE = "gcal_sync_state.json" # カレンダー情報ローカル保存
@@ -160,23 +167,27 @@ def list_updated_events(updated_min):
 
     events = []
     page_token = None
-    while True:
-        resp = (
-            service.events()
-            .list(
-                calendarId=GOOGLE_CALENDAR_ID,
-                updatedMin=updated_min,
-                singleEvents=True,
-                showDeleted=True,
-                maxResults=2500,
-                pageToken=page_token,
+    try:
+        while True:
+            resp = (
+                service.events()
+                .list(
+                    calendarId=GOOGLE_CALENDAR_ID,
+                    updatedMin=updated_min,
+                    singleEvents=True,
+                    showDeleted=True,
+                    maxResults=2500,
+                    pageToken=page_token,
+                )
+                .execute()
             )
-            .execute()
-        )
-        events.extend(resp.get("items", []))
-        page_token = resp.get("nextPageToken")
-        if not page_token:
-            break
+            events.extend(resp.get("items", []))
+            page_token = resp.get("nextPageToken")
+            if not page_token:
+                break
+    except Exception as exc:
+        logger.error("Googleイベント取得失敗: %s", exc)
+        return []
 
     return events
 

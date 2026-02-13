@@ -13,12 +13,19 @@ logging.basicConfig(
 )
 logger = logging.getLogger("watcher.register")
 
-GOOGLE_CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID")
-GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
-GOOGLE_SERVICE_ACCOUNT_JSON_PATH = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_PATH")
-GCAL_PUBSUB_TOPIC = os.getenv("GCAL_PUBSUB_TOPIC")
-GCAL_WEBHOOK_URL = os.getenv("GCAL_WEBHOOK_URL")
-WATCH_CHANNEL_ID = os.getenv("WATCH_CHANNEL_ID")
+def getenv_clean(name: str, default=None):
+    value = os.getenv(name, default)
+    if isinstance(value, str):
+        value = value.strip()
+        return value if value else default
+    return value
+
+GOOGLE_CALENDAR_ID = getenv_clean("GOOGLE_CALENDAR_ID")
+GOOGLE_SERVICE_ACCOUNT_JSON = getenv_clean("GOOGLE_SERVICE_ACCOUNT_JSON")
+GOOGLE_SERVICE_ACCOUNT_JSON_PATH = getenv_clean("GOOGLE_SERVICE_ACCOUNT_JSON_PATH")
+GCAL_PUBSUB_TOPIC = getenv_clean("GCAL_PUBSUB_TOPIC")
+GCAL_WEBHOOK_URL = getenv_clean("GCAL_WEBHOOK_URL")
+WATCH_CHANNEL_ID = getenv_clean("WATCH_CHANNEL_ID")
 
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
 STATE_FILE = "gcal_watch_state.json"
