@@ -1,4 +1,4 @@
-import json
+﻿import json
 import logging
 import os
 from collections import deque
@@ -20,15 +20,13 @@ app = Flask(__name__)
 
 def getenv_clean(name: str, default=None):
     # ------------------------------------------------------------
-    # 環境変数を取得し、文字列の場合は前後空白を除去して返す。
+    # 迺ｰ蠅・､画焚繧貞叙蠕励＠縲∵枚蟄怜・縺ｮ蝣ｴ蜷医・蜑榊ｾ檎ｩｺ逋ｽ繧帝勁蜴ｻ縺励※霑斐☆縲・    #
+    # 蠑墓焚:
+    # - name: 迺ｰ蠅・､画焚蜷・    # - default: 譛ｪ險ｭ螳壽凾縺ｮ繝・ヵ繧ｩ繝ｫ繝亥､
     #
-    # 引数:
-    # - name: 環境変数名
-    # - default: 未設定時のデフォルト値
-    #
-    # 出力:
-    # - 文字列: strip後、空文字なら default
-    # - 非文字列: そのまま
+    # 蜃ｺ蜉・
+    # - 譁・ｭ怜・: strip蠕後∫ｩｺ譁・ｭ励↑繧・default
+    # - 髱樊枚蟄怜・: 縺昴・縺ｾ縺ｾ
     # ------------------------------------------------------------
     value = os.getenv(name, default)
     if isinstance(value, str):
@@ -90,14 +88,13 @@ _gcal_discord_map = {}
 
 def parse_rfc3339(value):
     # ------------------------------------------------------------
-    # RFC3339 形式の日時文字列を datetime に変換する。
+    # RFC3339 蠖｢蠑上・譌･譎よ枚蟄怜・繧・datetime 縺ｫ螟画鋤縺吶ｋ縲・    #
+    # 蠑墓焚:
+    # - value: 螟画鋤蟇ｾ雎｡譁・ｭ怜・
     #
-    # 引数:
-    # - value: 変換対象文字列
-    #
-    # 出力:
-    # - 成功: datetime
-    # - 失敗: None
+    # 蜃ｺ蜉・
+    # - 謌仙粥: datetime
+    # - 螟ｱ謨・ None
     # ------------------------------------------------------------
     if not value:
         return None
@@ -109,11 +106,9 @@ def parse_rfc3339(value):
 
 def ensure_state_dir():
     # ------------------------------------------------------------
-    # 状態ファイル保存先ディレクトリを作成する。
-    #
-    # 出力:
-    # - なし（失敗時はログ出力）
-    # ------------------------------------------------------------
+    # 迥ｶ諷九ヵ繧｡繧､繝ｫ菫晏ｭ伜・繝・ぅ繝ｬ繧ｯ繝医Μ繧剃ｽ懈・縺吶ｋ縲・    #
+    # 蜃ｺ蜉・
+    # - 縺ｪ縺暦ｼ亥､ｱ謨玲凾縺ｯ繝ｭ繧ｰ蜃ｺ蜉幢ｼ・    # ------------------------------------------------------------
     try:
         os.makedirs(STATE_DIR, exist_ok=True)
     except Exception as exc:
@@ -122,11 +117,9 @@ def ensure_state_dir():
 
 def load_recent_message_ids():
     # ------------------------------------------------------------
-    # 直近処理済みメッセージIDを状態ファイルから復元する。
-    #
-    # 出力:
-    # - なし（メモリ上のdedupe構造に反映）
-    # ------------------------------------------------------------
+    # 逶ｴ霑大・逅・ｸ医∩繝｡繝・そ繝ｼ繧ｸID繧堤憾諷九ヵ繧｡繧､繝ｫ縺九ｉ蠕ｩ蜈・☆繧九・    #
+    # 蜃ｺ蜉・
+    # - 縺ｪ縺暦ｼ医Γ繝｢繝ｪ荳翫・dedupe讒矩縺ｫ蜿肴丐・・    # ------------------------------------------------------------
     if not os.path.exists(DEDUPE_STATE_FILE):
         return
     try:
@@ -143,11 +136,9 @@ def load_recent_message_ids():
 
 def save_recent_message_ids():
     # ------------------------------------------------------------
-    # 直近処理済みメッセージIDを状態ファイルへ保存する。
-    #
-    # 出力:
-    # - なし（失敗時はログ出力）
-    # ------------------------------------------------------------
+    # 逶ｴ霑大・逅・ｸ医∩繝｡繝・そ繝ｼ繧ｸID繧堤憾諷九ヵ繧｡繧､繝ｫ縺ｸ菫晏ｭ倥☆繧九・    #
+    # 蜃ｺ蜉・
+    # - 縺ｪ縺暦ｼ亥､ｱ謨玲凾縺ｯ繝ｭ繧ｰ蜃ｺ蜉幢ｼ・    # ------------------------------------------------------------
     ensure_state_dir()
     try:
         with open(DEDUPE_STATE_FILE, "w", encoding="utf-8") as f:
@@ -158,14 +149,12 @@ def save_recent_message_ids():
 
 def register_message_id(message_id):
     # ------------------------------------------------------------
-    # メッセージIDを重複排除セットへ登録する。
+    # 繝｡繝・そ繝ｼ繧ｸID繧帝㍾隍・賜髯､繧ｻ繝・ヨ縺ｸ逋ｻ骭ｲ縺吶ｋ縲・    #
+    # 蠑墓焚:
+    # - message_id: 蛻､螳壼ｯｾ雎｡ID
     #
-    # 引数:
-    # - message_id: 判定対象ID
-    #
-    # 出力:
-    # - True: 既に登録済み（重複）
-    # - False: 新規登録
+    # 蜃ｺ蜉・
+    # - True: 譌｢縺ｫ逋ｻ骭ｲ貂医∩・磯㍾隍・ｼ・    # - False: 譁ｰ隕冗匳骭ｲ
     # ------------------------------------------------------------
     if not message_id:
         return False
@@ -182,11 +171,9 @@ def register_message_id(message_id):
 
 def load_gcal_discord_map():
     # ------------------------------------------------------------
-    # GoogleイベントID -> DiscordイベントID の対応表を復元する。
-    #
-    # 出力:
-    # - なし（メモリ上の _gcal_discord_map に反映）
-    # ------------------------------------------------------------
+    # Google繧､繝吶Φ繝・D -> Discord繧､繝吶Φ繝・D 縺ｮ蟇ｾ蠢懆｡ｨ繧貞ｾｩ蜈・☆繧九・    #
+    # 蜃ｺ蜉・
+    # - 縺ｪ縺暦ｼ医Γ繝｢繝ｪ荳翫・ _gcal_discord_map 縺ｫ蜿肴丐・・    # ------------------------------------------------------------
     global _gcal_discord_map
     if not os.path.exists(GCAL_DISCORD_MAP_FILE):
         _gcal_discord_map = {}
@@ -203,11 +190,9 @@ def load_gcal_discord_map():
 
 def save_gcal_discord_map():
     # ------------------------------------------------------------
-    # Google->Discord 対応表を状態ファイルへ保存する。
-    #
-    # 出力:
-    # - なし（失敗時はログ出力）
-    # ------------------------------------------------------------
+    # Google->Discord 蟇ｾ蠢懆｡ｨ繧堤憾諷九ヵ繧｡繧､繝ｫ縺ｸ菫晏ｭ倥☆繧九・    #
+    # 蜃ｺ蜉・
+    # - 縺ｪ縺暦ｼ亥､ｱ謨玲凾縺ｯ繝ｭ繧ｰ蜃ｺ蜉幢ｼ・    # ------------------------------------------------------------
     ensure_state_dir()
     try:
         with open(GCAL_DISCORD_MAP_FILE, "w", encoding="utf-8") as f:
@@ -241,18 +226,17 @@ def remove_discord_event_id_by_google_id(google_event_id):
 
 def load_service_account_info():
     # ------------------------------------------------------------
-    # Google Service Account 情報を環境変数/ファイルから読み込む。
-    #
-    # 入力:
+    # Google Service Account 諠・ｱ繧堤腸蠅・､画焚/繝輔ぃ繧､繝ｫ縺九ｉ隱ｭ縺ｿ霎ｼ繧縲・    #
+    # 蜈･蜉・
     # - GOOGLE_SERVICE_ACCOUNT_JSON:
-    #   1) JSON文字列
-    #   2) JSONファイルパス
+    #   1) JSON譁・ｭ怜・
+    #   2) JSON繝輔ぃ繧､繝ｫ繝代せ
     # - GOOGLE_SERVICE_ACCOUNT_JSON_PATH:
-    #   明示的なJSONファイルパス
+    #   譏守､ｺ逧・↑JSON繝輔ぃ繧､繝ｫ繝代せ
     #
-    # 出力:
-    # - 成功: service_account_info(dict)
-    # - 失敗: None
+    # 蜃ｺ蜉・
+    # - 謌仙粥: service_account_info(dict)
+    # - 螟ｱ謨・ None
     # ------------------------------------------------------------
     json_env = GOOGLE_SERVICE_ACCOUNT_JSON
     if json_env:
@@ -289,16 +273,14 @@ def load_service_account_info():
 
 def get_calendar_service():
     # ------------------------------------------------------------
-    # Google Calendar API service を初期化し、再利用する。
+    # Google Calendar API service 繧貞・譛溷喧縺励∝・蛻ｩ逕ｨ縺吶ｋ縲・    #
+    # 蜃ｺ蜉・
+    # - 謌仙粥: googleapiclient service
+    # - 螟ｱ謨・ None
     #
-    # 出力:
-    # - 成功: googleapiclient service
-    # - 失敗: None
-    #
-    # 備考:
-    # - _calendar_service にキャッシュし再利用する
-    # - GOOGLE_CALENDAR_ID 未設定時は失敗
-    # ------------------------------------------------------------
+    # 蛯呵・
+    # - _calendar_service 縺ｫ繧ｭ繝｣繝・す繝･縺怜・蛻ｩ逕ｨ縺吶ｋ
+    # - GOOGLE_CALENDAR_ID 譛ｪ險ｭ螳壽凾縺ｯ螟ｱ謨・    # ------------------------------------------------------------
     global _calendar_service
     if _calendar_service is not None:
         return _calendar_service
@@ -319,11 +301,10 @@ def get_calendar_service():
 
 def load_sync_state():
     # ------------------------------------------------------------
-    # 同期カーソル状態(updated_min)を読み込む。
-    #
-    # 出力:
-    # - 成功: 状態dict
-    # - 失敗/未作成: {}
+    # 蜷梧悄繧ｫ繝ｼ繧ｽ繝ｫ迥ｶ諷・updated_min)繧定ｪｭ縺ｿ霎ｼ繧縲・    #
+    # 蜃ｺ蜉・
+    # - 謌仙粥: 迥ｶ諷掬ict
+    # - 螟ｱ謨・譛ｪ菴懈・: {}
     # ------------------------------------------------------------
     if not os.path.exists(SYNC_STATE_FILE):
         return {}
@@ -336,10 +317,9 @@ def load_sync_state():
 
 def save_sync_state(updated_min):
     # ------------------------------------------------------------
-    # 同期カーソル(updated_min)を状態ファイルに保存する。
-    #
-    # 引数:
-    # - updated_min: 次回同期に使うカーソル
+    # 蜷梧悄繧ｫ繝ｼ繧ｽ繝ｫ(updated_min)繧堤憾諷九ヵ繧｡繧､繝ｫ縺ｫ菫晏ｭ倥☆繧九・    #
+    # 蠑墓焚:
+    # - updated_min: 谺｡蝗槫酔譛溘↓菴ｿ縺・き繝ｼ繧ｽ繝ｫ
     # ------------------------------------------------------------
     ensure_state_dir()
     with open(SYNC_STATE_FILE, "w", encoding="utf-8") as f:
@@ -348,19 +328,15 @@ def save_sync_state(updated_min):
 
 def list_updated_events(updated_min):
     # ------------------------------------------------------------
-    # Google Calendar の更新イベント一覧を取得する。
+    # Google Calendar 縺ｮ譖ｴ譁ｰ繧､繝吶Φ繝井ｸ隕ｧ繧貞叙蠕励☆繧九・    #
+    # 蠑墓焚:
+    # - updated_min: 蜑榊屓蜷梧悄繧ｫ繝ｼ繧ｽ繝ｫ・・SO譁・ｭ怜・・・    #
+    # 蜃ｺ蜉・
+    # - 謌仙粥: 繧､繝吶Φ繝磯・蛻・list[dict])
+    # - 螟ｱ謨・ 遨ｺ驟榊・
     #
-    # 引数:
-    # - updated_min: 前回同期カーソル（ISO文字列）
-    #
-    # 出力:
-    # - 成功: イベント配列(list[dict])
-    # - 失敗: 空配列
-    #
-    # 挙動:
-    # - 初回は30日lookbackで取得
-    # - 差分取りこぼし回避のため2分巻き戻し
-    # - updatedMinTooLongAgo(410)時は updatedMin なしで全取得へフォールバック
+    # 謖吝虚:
+    # - 蛻晏屓縺ｯ30譌･lookback縺ｧ蜿門ｾ・    # - 蟾ｮ蛻・叙繧翫％縺ｼ縺怜屓驕ｿ縺ｮ縺溘ａ2蛻・ｷｻ縺肴綾縺・    # - updatedMinTooLongAgo(410)譎ゅ・ updatedMin 縺ｪ縺励〒蜈ｨ蜿門ｾ励∈繝輔か繝ｼ繝ｫ繝舌ャ繧ｯ
     # ------------------------------------------------------------
     service = get_calendar_service()
     if not service or not GOOGLE_CALENDAR_ID:
@@ -432,14 +408,13 @@ def list_updated_events(updated_min):
 
 def build_notion_date(event):
     # ------------------------------------------------------------
-    # Googleイベントから Notion date プロパティ形式を作る。
-    #
-    # 引数:
+    # Google繧､繝吶Φ繝医°繧・Notion date 繝励Ο繝代ユ繧｣蠖｢蠑上ｒ菴懊ｋ縲・    #
+    # 蠑墓焚:
     # - event: Google Calendar event(dict)
     #
-    # 出力:
-    # - 成功: {"start": ..., "end": ...}
-    # - 失敗: None
+    # 蜃ｺ蜉・
+    # - 謌仙粥: {"start": ..., "end": ...}
+    # - 螟ｱ謨・ None
     # ------------------------------------------------------------
     start = event.get("start", {})
     end = event.get("end", {})
@@ -455,15 +430,13 @@ def build_notion_date(event):
 
 def notion_extract_rich_text(page, prop_name):
     # ------------------------------------------------------------
-    # Notionページの rich_text プロパティ先頭テキストを抽出する。
-    #
-    # 引数:
-    # - page: Notionページ(dict)
-    # - prop_name: プロパティ名
-    #
-    # 出力:
-    # - 成功: 文字列
-    # - 失敗/空: None
+    # Notion繝壹・繧ｸ縺ｮ rich_text 繝励Ο繝代ユ繧｣蜈磯ｭ繝・く繧ｹ繝医ｒ謚ｽ蜃ｺ縺吶ｋ縲・    #
+    # 蠑墓焚:
+    # - page: Notion繝壹・繧ｸ(dict)
+    # - prop_name: 繝励Ο繝代ユ繧｣蜷・    #
+    # 蜃ｺ蜉・
+    # - 謌仙粥: 譁・ｭ怜・
+    # - 螟ｱ謨・遨ｺ: None
     # ------------------------------------------------------------
     if not page:
         return None
@@ -485,14 +458,13 @@ def notion_extract_rich_text(page, prop_name):
 
 def notion_find_by_google_event_id(google_event_id):
     # ------------------------------------------------------------
-    # GoogleイベントIDをキーに Notion 内部DBからページを1件検索する。
-    #
-    # 引数:
+    # Google繧､繝吶Φ繝・D繧偵く繝ｼ縺ｫ Notion 蜀・ΚDB縺九ｉ繝壹・繧ｸ繧・莉ｶ讀懃ｴ｢縺吶ｋ縲・    #
+    # 蠑墓焚:
     # - google_event_id: Google Calendar event.id
     #
-    # 出力:
-    # - 見つかった場合: Notionページ(dict)
-    # - 見つからない場合/失敗: None
+    # 蜃ｺ蜉・
+    # - 隕九▽縺九▲縺溷ｴ蜷・ Notion繝壹・繧ｸ(dict)
+    # - 隕九▽縺九ｉ縺ｪ縺・ｴ蜷・螟ｱ謨・ None
     # ------------------------------------------------------------
     if not NOTION_EVENT_INTERNAL_DB_ID:
         logger.error("NOTION_EVENT_INTERNAL_ID is not set")
@@ -525,19 +497,18 @@ def notion_update_event(
     location=None,
 ):
     # ------------------------------------------------------------
-    # Notionページを部分更新する。
-    #
-    # 引数:
-    # - page_id: 更新対象ページID
+    # Notion繝壹・繧ｸ繧帝Κ蛻・峩譁ｰ縺吶ｋ縲・    #
+    # 蠑墓焚:
+    # - page_id: 譖ｴ譁ｰ蟇ｾ雎｡繝壹・繧ｸID
     # - name/content/date_prop/event_url/google_event_id/page_uuid/message_id/location:
-    #   None 以外の項目だけ更新対象に含める
+    #   None 莉･螟悶・鬆・岼縺縺第峩譁ｰ蟇ｾ雎｡縺ｫ蜷ｫ繧√ｋ
     #
-    # 出力:
-    # - 成功: True
-    # - 失敗: False
+    # 蜃ｺ蜉・
+    # - 謌仙粥: True
+    # - 螟ｱ謨・ False
     #
-    # 備考:
-    # - location は place 型プロパティとして更新する
+    # 蛯呵・
+    # - location 縺ｯ place 蝙九・繝ｭ繝代ユ繧｣縺ｨ縺励※譖ｴ譁ｰ縺吶ｋ
     # ------------------------------------------------------------
     props = {}
     if name is not None:
@@ -575,17 +546,16 @@ def notion_update_event(
 
 def notion_create_event(name, content, date_prop, creator_id, event_url, google_event_id, location=None):
     # ------------------------------------------------------------
-    # Notion 内部DBにイベントページを新規作成する。
-    #
-    # 引数:
+    # Notion 蜀・ΚDB縺ｫ繧､繝吶Φ繝医・繝ｼ繧ｸ繧呈眠隕丈ｽ懈・縺吶ｋ縲・    #
+    # 蠑墓焚:
     # - name/content/date_prop/creator_id/event_url/google_event_id/location
     #
-    # 出力:
-    # - 成功: 作成したページID(str)
-    # - 失敗: None
+    # 蜃ｺ蜉・
+    # - 謌仙粥: 菴懈・縺励◆繝壹・繧ｸID(str)
+    # - 螟ｱ謨・ None
     #
-    # 備考:
-    # - 作成後にページ自身のIDをページIDプロパティへ反映する
+    # 蛯呵・
+    # - 菴懈・蠕後↓繝壹・繧ｸ閾ｪ霄ｫ縺ｮID繧偵・繝ｼ繧ｸID繝励Ο繝代ユ繧｣縺ｸ蜿肴丐縺吶ｋ
     # ------------------------------------------------------------
     url = "https://api.notion.com/v1/pages"
     data = {
@@ -617,14 +587,13 @@ def notion_create_event(name, content, date_prop, creator_id, event_url, google_
 
 def notion_archive_page(page):
     # ------------------------------------------------------------
-    # Notionページをアーカイブする。
+    # Notion繝壹・繧ｸ繧偵い繝ｼ繧ｫ繧､繝悶☆繧九・    #
+    # 蠑墓焚:
+    # - page: Notion繝壹・繧ｸ(dict)
     #
-    # 引数:
-    # - page: Notionページ(dict)
-    #
-    # 出力:
-    # - 成功: True
-    # - 失敗: False
+    # 蜃ｺ蜉・
+    # - 謌仙粥: True
+    # - 螟ｱ謨・ False
     # ------------------------------------------------------------
     if not page:
         return False
@@ -642,12 +611,10 @@ def notion_archive_page(page):
 
 def discord_sync_available():
     # ------------------------------------------------------------
-    # Discord 同期が実行可能かを判定する。
-    #
-    # 出力:
-    # - True: 同期可能
-    # - False: 同期不可（無効化/必須env不足）
-    # ------------------------------------------------------------
+    # Discord 蜷梧悄縺悟ｮ溯｡悟庄閭ｽ縺九ｒ蛻､螳壹☆繧九・    #
+    # 蜃ｺ蜉・
+    # - True: 蜷梧悄蜿ｯ閭ｽ
+    # - False: 蜷梧悄荳榊庄・育┌蜉ｹ蛹・蠢・・nv荳崎ｶｳ・・    # ------------------------------------------------------------
     if not DISCORD_SYNC_ENABLED:
         return False
     if not DISCORD_TOKEN:
@@ -661,17 +628,15 @@ def discord_sync_available():
 
 def discord_api_request(method, path, payload=None):
     # ------------------------------------------------------------
-    # Discord REST API を実行する共通関数。
-    #
-    # 引数:
-    # - method: HTTPメソッド
-    # - path: /api/v10 以降のパス
-    # - payload: リクエストJSON（任意）
-    #
-    # 出力:
-    # - 成功(204): {}
-    # - 成功(JSON): dict
-    # - 失敗: None
+    # Discord REST API 繧貞ｮ溯｡後☆繧句・騾夐未謨ｰ縲・    #
+    # 蠑墓焚:
+    # - method: HTTP繝｡繧ｽ繝・ラ
+    # - path: /api/v10 莉･髯阪・繝代せ
+    # - payload: 繝ｪ繧ｯ繧ｨ繧ｹ繝・SON・井ｻｻ諢擾ｼ・    #
+    # 蜃ｺ蜉・
+    # - 謌仙粥(204): {}
+    # - 謌仙粥(JSON): dict
+    # - 螟ｱ謨・ None
     # ------------------------------------------------------------
     url = f"https://discord.com/api/v10{path}"
     d_headers = {
@@ -698,18 +663,17 @@ def discord_api_request(method, path, payload=None):
 
 def parse_google_event_times(event):
     # ------------------------------------------------------------
-    # Googleイベントの start/end を Discord用 datetime に正規化する。
-    #
-    # 引数:
+    # Google繧､繝吶Φ繝医・ start/end 繧・Discord逕ｨ datetime 縺ｫ豁｣隕丞喧縺吶ｋ縲・    #
+    # 蠑墓焚:
     # - event: Google Calendar event(dict)
     #
-    # 出力:
-    # - 成功: (start_dt, end_dt)
-    # - 失敗: (None, None)
+    # 蜃ｺ蜉・
+    # - 謌仙粥: (start_dt, end_dt)
+    # - 螟ｱ謨・ (None, None)
     #
-    # 備考:
-    # - 終了時刻未指定時は +1時間
-    # - 終了 <= 開始 の場合も +1時間で補正
+    # 蛯呵・
+    # - 邨ゆｺ・凾蛻ｻ譛ｪ謖・ｮ壽凾縺ｯ +1譎る俣
+    # - 邨ゆｺ・<= 髢句ｧ・縺ｮ蝣ｴ蜷医ｂ +1譎る俣縺ｧ陬懈ｭ｣
     # ------------------------------------------------------------
     def parse_part(part, is_end=False):
         date_time = part.get("dateTime")
@@ -753,18 +717,16 @@ def build_discord_description(description, google_event_id):
 
 def build_discord_payload(event):
     # ------------------------------------------------------------
-    # Googleイベントから Discord Scheduled Event 用payloadを組み立てる。
-    #
-    # 引数:
+    # Google繧､繝吶Φ繝医°繧・Discord Scheduled Event 逕ｨpayload繧堤ｵ・∩遶九※繧九・    #
+    # 蠑墓焚:
     # - event: Google Calendar event(dict)
     #
-    # 出力:
-    # - 成功: payload(dict)
-    # - 失敗: None
+    # 蜃ｺ蜉・
+    # - 謌仙粥: payload(dict)
+    # - 螟ｱ謨・ None
     #
-    # 備考:
-    # - 説明文末尾に origin marker([gcal-id:...]) を付与する
-    # ------------------------------------------------------------
+    # 蛯呵・
+    # - 隱ｬ譏取枚譛ｫ蟆ｾ縺ｫ origin marker([gcal-id:...]) 繧剃ｻ倅ｸ弱☆繧・    # ------------------------------------------------------------
     google_event_id = event.get("id")
     if not google_event_id:
         return None
@@ -811,20 +773,19 @@ def discord_delete_event(discord_event_id):
 
 def sync_to_discord(event, notion_page):
     # ------------------------------------------------------------
-    # Googleイベントを Discord Scheduled Event に同期する。
-    #
-    # 引数:
+    # Google繧､繝吶Φ繝医ｒ Discord Scheduled Event 縺ｫ蜷梧悄縺吶ｋ縲・    #
+    # 蠑墓焚:
     # - event: Google Calendar event(dict)
-    # - notion_page: 対応するNotionページ(dict|None)
+    # - notion_page: 蟇ｾ蠢懊☆繧起otion繝壹・繧ｸ(dict|None)
     #
-    # 出力:
-    # - 作成/更新成功時: DiscordイベントID(str)
-    # - 削除時/未同期時/失敗時: None
+    # 蜃ｺ蜉・
+    # - 菴懈・/譖ｴ譁ｰ謌仙粥譎・ Discord繧､繝吶Φ繝・D(str)
+    # - 蜑企勁譎・譛ｪ蜷梧悄譎・螟ｱ謨玲凾: None
     #
-    # 挙動:
-    # - cancel イベントは Discord 側を削除
-    # - NotionのメッセージID -> 永続map の順で対応IDを解決
-    # - IDが無ければ新規作成
+    # 謖吝虚:
+    # - cancel 繧､繝吶Φ繝医・ Discord 蛛ｴ繧貞炎髯､
+    # - Notion縺ｮ繝｡繝・そ繝ｼ繧ｸID -> 豌ｸ邯嗄ap 縺ｮ鬆・〒蟇ｾ蠢廬D繧定ｧ｣豎ｺ
+    # - ID縺檎┌縺代ｌ縺ｰ譁ｰ隕丈ｽ懈・
     # ------------------------------------------------------------
     if not discord_sync_available():
         return None
@@ -869,19 +830,16 @@ def sync_to_discord(event, notion_page):
 
 def upsert_event(event):
     # ------------------------------------------------------------
-    # 1件の Googleイベントを Notion/Discord に反映する。
-    #
-    # 引数:
+    # 1莉ｶ縺ｮ Google繧､繝吶Φ繝医ｒ Notion/Discord 縺ｫ蜿肴丐縺吶ｋ縲・    #
+    # 蠑墓焚:
     # - event: Google Calendar event(dict)
     #
-    # 出力:
-    # - なし
-    #
-    # 挙動:
-    # - cancelled: Notionアーカイブ + Discord削除
+    # 蜃ｺ蜉・
+    # - 縺ｪ縺・    #
+    # 謖吝虚:
+    # - cancelled: Notion繧｢繝ｼ繧ｫ繧､繝・+ Discord蜑企勁
     # - active: Notion upsert + Discord create/update
-    # - DiscordイベントIDは Notion のメッセージIDにも保存する
-    # ------------------------------------------------------------
+    # - Discord繧､繝吶Φ繝・D縺ｯ Notion 縺ｮ繝｡繝・そ繝ｼ繧ｸID縺ｫ繧ゆｿ晏ｭ倥☆繧・    # ------------------------------------------------------------
     google_event_id = event.get("id")
     if not google_event_id:
         return
@@ -894,8 +852,8 @@ def upsert_event(event):
         sync_to_discord(event, page)
         return
 
-    name = event.get("summary") or "(タイトルなし)"
-    content = event.get("description") or "(内容なし)"
+    name = event.get("summary") or "(繧ｿ繧､繝医Ν縺ｪ縺・"
+    content = event.get("description") or "(蜀・ｮｹ縺ｪ縺・"
     event_url = event.get("htmlLink")
     location = event.get("location")
     creator_id = event.get("creator", {}).get("email") or "unknown"
@@ -937,19 +895,13 @@ def upsert_event(event):
 
 def sync_calendar():
     # ------------------------------------------------------------
-    # Google Calendar 差分を取得し、Notion/Discord 同期を一括実行する。
-    #
-    # 出力:
-    # - True: 同期成功（重大エラーなし）
-    # - False: 同期失敗
-    #
-    # 処理概要:
-    # 1) 必須env確認
-    # 2) カーソル(updated_min)を読み込み
-    # 3) 差分イベント取得
-    # 4) 各イベントを upsert_event で反映
-    # 5) 次回カーソルを保存
-    # ------------------------------------------------------------
+    # Google Calendar 蟾ｮ蛻・ｒ蜿門ｾ励＠縲¨otion/Discord 蜷梧悄繧剃ｸ諡ｬ螳溯｡後☆繧九・    #
+    # 蜃ｺ蜉・
+    # - True: 蜷梧悄謌仙粥・磯㍾螟ｧ繧ｨ繝ｩ繝ｼ縺ｪ縺暦ｼ・    # - False: 蜷梧悄螟ｱ謨・    #
+    # 蜃ｦ逅・ｦりｦ・
+    # 1) 蠢・・nv遒ｺ隱・    # 2) 繧ｫ繝ｼ繧ｽ繝ｫ(updated_min)繧定ｪｭ縺ｿ霎ｼ縺ｿ
+    # 3) 蟾ｮ蛻・う繝吶Φ繝亥叙蠕・    # 4) 蜷・う繝吶Φ繝医ｒ upsert_event 縺ｧ蜿肴丐
+    # 5) 谺｡蝗槭き繝ｼ繧ｽ繝ｫ繧剃ｿ晏ｭ・    # ------------------------------------------------------------
     if not (NOTION_TOKEN and NOTION_EVENT_INTERNAL_DB_ID and GOOGLE_CALENDAR_ID):
         logger.error(
             "Missing required envs: NOTION_TOKEN/NOTION_EVENT_INTERNAL_ID/GOOGLE_CALENDAR_ID"
@@ -995,14 +947,12 @@ load_gcal_discord_map()
 @app.route("/gcal/webhook", methods=["POST"])
 def gcal_webhook():
     # ------------------------------------------------------------
-    # Google Calendar watch 通知の受信エンドポイント。
-    #
-    # 出力:
-    # - 204: 同期成功 or 重複通知をスキップ
-    # - 500: 同期失敗
-    #
-    # 備考:
-    # - X-Goog-Channel-ID / X-Goog-Message-Number で重複排除を行う
+    # Google Calendar watch 騾夂衍縺ｮ蜿嶺ｿ｡繧ｨ繝ｳ繝峨・繧､繝ｳ繝医・    #
+    # 蜃ｺ蜉・
+    # - 204: 蜷梧悄謌仙粥 or 驥崎､・夂衍繧偵せ繧ｭ繝・・
+    # - 500: 蜷梧悄螟ｱ謨・    #
+    # 蛯呵・
+    # - X-Goog-Channel-ID / X-Goog-Message-Number 縺ｧ驥崎､・賜髯､繧定｡後≧
     # ------------------------------------------------------------
     goog_channel = request.headers.get("X-Goog-Channel-ID")
     goog_message_num = request.headers.get("X-Goog-Message-Number")
@@ -1028,12 +978,10 @@ def gcal_webhook():
 @app.route("/gcal/sync", methods=["GET", "POST"])
 def manual_sync():
     # ------------------------------------------------------------
-    # 手動同期エンドポイント。
-    #
-    # 出力:
-    # - 200: 同期成功
-    # - 500: 同期失敗
-    # ------------------------------------------------------------
+    # 謇句虚蜷梧悄繧ｨ繝ｳ繝峨・繧､繝ｳ繝医・    #
+    # 蜃ｺ蜉・
+    # - 200: 蜷梧悄謌仙粥
+    # - 500: 蜷梧悄螟ｱ謨・    # ------------------------------------------------------------
     synced = sync_calendar()
     return ("ok", 200) if synced else ("sync failed", 500)
 
@@ -1047,3 +995,5 @@ def health():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
     app.run(host="0.0.0.0", port=port)
+
+
