@@ -42,6 +42,12 @@ DEDUPE_STATE_FILE = os.path.join(STATE_DIR, "gcal_recent_messages.json")
 DEDUPE_MAX_IDS = int(getenv_clean("DEDUPE_MAX_IDS", "1000"))
 PUBSUB_PUSH_AUDIENCE = getenv_clean("PUBSUB_PUSH_AUDIENCE")
 PUBSUB_PUSH_SERVICE_ACCOUNT = getenv_clean("PUBSUB_PUSH_SERVICE_ACCOUNT")
+PUBSUB_AUTH_STRICT = getenv_clean("PUBSUB_AUTH_STRICT", "false").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
 
 headers = {
     "Authorization": f"Bearer {NOTION_TOKEN}",
@@ -462,14 +468,18 @@ if not PUBSUB_PUSH_AUDIENCE:
     logger.warning(
         "PUBSUB_PUSH_AUDIENCE is not set. Webhook auth verification is effectively disabled."
     )
+if not PUBSUB_AUTH_STRICT:
+    logger.warning("PUBSUB_AUTH_STRICT is false. Invalid auth requests are allowed.")
 
 
 @app.route("/gcal/webhook", methods=["POST"])
 def gcal_webhook():
     ok, reason = verify_pubsub_push_auth()
-    if not ok:
-        logger.warning("Webhook auth rejected: %s", reason)
+    if not ok and PUBSUB_AUTH_STRICT:
+        logger.warning("Webhook auth rejected (strict): %s", reason)
         return "unauthorized", 401
+    if not ok:
+        logger.warning("Webhook auth failed but allowed (non-strict): %s", reason)
 
     body = request.get_json(silent=True) or {}
     pubsub_message = body.get("message", {}) if isinstance(body, dict) else {}
