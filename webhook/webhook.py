@@ -5,6 +5,8 @@ from collections import deque
 from datetime import datetime, timedelta, timezone
 
 import requests
+import threading
+import time
 from flask import Flask, request
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -62,6 +64,7 @@ DEDUPE_STATE_FILE = os.path.join(STATE_DIR, "gcal_recent_messages.json")
 GCAL_DISCORD_MAP_FILE = os.path.join(STATE_DIR, "gcal_discord_map.json")
 GCAL_NOTION_MAP_FILE = os.path.join(STATE_DIR, "gcal_notion_map.json")
 DEDUPE_MAX_IDS = int(getenv_clean("DEDUPE_MAX_IDS", "1000"))
+SYNC_COOLDOWN_SECONDS = float(getenv_clean("SYNC_COOLDOWN_SECONDS", "2"))
 
 NOTION_PROP_TITLE = getenv_clean("NOTION_PROP_TITLE", "イベント名")
 NOTION_PROP_CONTENT = getenv_clean("NOTION_PROP_CONTENT", "内容")
@@ -95,6 +98,8 @@ _processed_message_ids = deque(maxlen=max(100, DEDUPE_MAX_IDS))
 _processed_message_set = set()
 _gcal_discord_map = {}
 _gcal_notion_map = {"internal": {}, "external": {}}
+_sync_lock = threading.Lock()
+_sync_last_run_epoch = 0.0
 
 
 def parse_rfc3339(value):
@@ -1242,6 +1247,43 @@ def sync_calendar():
     return not had_error
 
 
+def run_sync_guarded(source: str):
+    # ------------------------------------------------------------
+    # 同期処理の同時実行を抑止し、短時間の連打通知を間引く。
+    #
+    # 引数:
+    # - source: 呼び出し元識別子（webhook/manual など）
+    #
+    # 出力:
+    # - (True, "done"): 実際に同期実行し、成功
+    # - (False, "done"): 実際に同期実行し、失敗
+    # - (True, "cooldown"): 直近実行から短時間のためスキップ
+    # - (True, "in_progress"): 別スレッドで実行中のためスキップ
+    # ------------------------------------------------------------
+    global _sync_last_run_epoch
+
+    now = time.time()
+    if now - _sync_last_run_epoch < max(0.0, SYNC_COOLDOWN_SECONDS):
+        logger.info(
+            "Sync skipped source=%s reason=cooldown cool=%.3fs",
+            source,
+            SYNC_COOLDOWN_SECONDS,
+        )
+        return True, "cooldown"
+
+    locked = _sync_lock.acquire(blocking=False)
+    if not locked:
+        logger.info("Sync skipped source=%s reason=in_progress", source)
+        return True, "in_progress"
+
+    try:
+        synced = sync_calendar()
+        _sync_last_run_epoch = time.time()
+        return synced, "done"
+    finally:
+        _sync_lock.release()
+
+
 ensure_state_dir()
 load_recent_message_ids()
 load_gcal_discord_map()
@@ -1272,7 +1314,9 @@ def gcal_webhook():
         goog_state,
         goog_message_num,
     )
-    synced = sync_calendar()
+    synced, reason = run_sync_guarded("webhook")
+    if reason != "done":
+        return "", 204
     if not synced:
         return "sync failed", 500
     return "", 204
@@ -1287,7 +1331,7 @@ def manual_sync():
     # - 200: 同期成功
     # - 500: 同期失敗
     # ------------------------------------------------------------
-    synced = sync_calendar()
+    synced, _ = run_sync_guarded("manual")
     return ("ok", 200) if synced else ("sync failed", 500)
 
 
