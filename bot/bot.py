@@ -106,20 +106,40 @@ def load_service_account_info():
     if json_env:
         # ケース1: 環境変数がファイルパス
         if os.path.exists(json_env):
-            with open(json_env, "r", encoding="utf-8") as f:
-                return json.load(f)
+            try:
+                with open(json_env, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as exc:
+                logger.error("GoogleサービスアカウントJSON読み込み失敗(path): %s", exc)
+                return None
         try:
             # ケース2: 環境変数がJSON文字列
             return json.loads(json_env)
         except json.JSONDecodeError:
             # 文字列はあるがJSONとして壊れている
+            logger.error(
+                "GOOGLE_SERVICE_ACCOUNT_JSON は有効なJSON文字列でもファイルパスでもありません。"
+            )
             return None
 
     # 明示パス指定を利用
-    if GOOGLE_SERVICE_ACCOUNT_JSON_PATH and os.path.exists(GOOGLE_SERVICE_ACCOUNT_JSON_PATH):
-        with open(GOOGLE_SERVICE_ACCOUNT_JSON_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
+    if GOOGLE_SERVICE_ACCOUNT_JSON_PATH:
+        if not os.path.exists(GOOGLE_SERVICE_ACCOUNT_JSON_PATH):
+            logger.error(
+                "GOOGLE_SERVICE_ACCOUNT_JSON_PATH のファイルが存在しません: %s",
+                GOOGLE_SERVICE_ACCOUNT_JSON_PATH,
+            )
+            return None
+        try:
+            with open(GOOGLE_SERVICE_ACCOUNT_JSON_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as exc:
+            logger.error("GoogleサービスアカウントJSON読み込み失敗(path): %s", exc)
+            return None
     # 認証情報を解決できなかった
+    logger.warning(
+        "Google連携無効: GOOGLE_SERVICE_ACCOUNT_JSON / GOOGLE_SERVICE_ACCOUNT_JSON_PATH が未設定です。"
+    )
     return None
 
 def get_google_calendar_service():
@@ -148,6 +168,7 @@ def get_google_calendar_service():
         return _google_service
     # カレンダーIDが無い場合は連携不能
     if not GOOGLE_CALENDAR_ID:
+        logger.warning("Google連携無効: GOOGLE_CALENDAR_ID が未設定です。")
         return None
     # 認証情報をロード
     info = load_service_account_info()
@@ -155,9 +176,30 @@ def get_google_calendar_service():
     if not info:
         return None
     # Service Account から認証情報を生成して Calendar API client を作成
-    creds = service_account.Credentials.from_service_account_info(info, scopes=GOOGLE_SCOPES)
-    _google_service = build("calendar", "v3", credentials=creds, cache_discovery=False)
-    return _google_service
+    try:
+        creds = service_account.Credentials.from_service_account_info(info, scopes=GOOGLE_SCOPES)
+        _google_service = build("calendar", "v3", credentials=creds, cache_discovery=False)
+        return _google_service
+    except Exception as exc:
+        logger.error("Google Calendar service 初期化失敗: %s", exc)
+        return None
+
+
+def validate_google_calendar_connection():
+    # 起動時に設定/権限の妥当性を確認し、失敗理由をログへ出す。
+    service = get_google_calendar_service()
+    if not service:
+        return False
+    try:
+        service.calendars().get(calendarId=GOOGLE_CALENDAR_ID).execute()
+        logger.info("Googleカレンダー接続確認OK: %s", GOOGLE_CALENDAR_ID)
+        return True
+    except Exception as exc:
+        logger.error(
+            "Googleカレンダー接続確認失敗。カレンダー共有設定/ID/権限を確認してください: %s",
+            exc,
+        )
+        return False
 
 def google_add_event(name, description, start_dt, end_dt):
     # ------------------------------------------------------------
@@ -184,6 +226,7 @@ def google_add_event(name, description, start_dt, end_dt):
     service = get_google_calendar_service()
     # Google service が無ければスキップ
     if not service:
+        logger.warning("Googleカレンダー登録をスキップ: 連携設定が有効化されていません。")
         return None
     start_iso = to_jst_iso(start_dt)
     end_iso = to_jst_iso(end_dt)
@@ -1541,6 +1584,7 @@ async def on_ready():
     FIRST_QA_RUN = cache.get("_first_qa_run", True)
 
     logger.info("FIRST_QA_RUN = %s", FIRST_QA_RUN)
+    validate_google_calendar_connection()
 
     ensure_question_numbers()
 
