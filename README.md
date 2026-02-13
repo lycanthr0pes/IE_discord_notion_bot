@@ -17,17 +17,20 @@ Discord と Google Calendar / Notion を同期する Bot です。
   - Notion 外部DB / 内部DB をアーカイブ
   - 内部DBに保存済みの GoogleイベントID があれば Google Calendar も削除
 
-### 2) Google Calendar -> Notion (webhook-only)
+### 2) Google Calendar -> Discord / Notion (webhook-only)
 
 - `watcher/register.py` / `watcher/renew.py` が Google Calendar watch を管理
-- 通知先は `GCAL_WEBHOOK_URL`（`https://<webhook-domain>/gcal/webhook`）
-- `webhook/webhook.py` が通知受信後に Google Calendar の差分を取得して Notion に反映
+  - 通知先は `GCAL_WEBHOOK_URL`（`https://<webhook-domain>/gcal/webhook`）
+- Notion:
+  - `webhook/webhook.py` が通知受信後に Google Calendar の差分を取得して Notion に反映
+- Discord:
+  - `webhook/webhook.py` が通知受信後に Google Calendar の差分を取得して Discord に反映
 
 ## Services
 
 - `bot`: Discord Bot 本体
 - `watcher`: Google Calendar watch 登録 / 更新
-- `webhook`: Google Calendar 通知受信 + Notion 反映
+- `webhook`: Google Calendar 通知受信 + Notion / Discord 反映
 
 ## Command Features
 
@@ -84,7 +87,7 @@ Discord と Google Calendar / Notion を同期する Bot です。
 
 ### 2) 手動同期で切り分ける
 
-- `GET /gcal/sync` が成功して Notion が更新される場合:
+- `GET /gcal/sync` が成功して Notion / Discordが更新される場合:
   - Notion API / Google API / 認証は概ね正常
   - 問題は「通知経路（watch -> webhook）」に絞れる
 
@@ -93,7 +96,7 @@ Discord と Google Calendar / Notion を同期する Bot です。
 - ログに `updatedMinTooLongAgo` が出たら古い同期状態
 - 状態ファイルをリセットして再同期
 
-### 4) Notion に反映されない場合
+### 4) Notion / Disocrd に反映されない場合
 
 - `webhook` ログで以下を確認:
   - `Google events fetched: N`

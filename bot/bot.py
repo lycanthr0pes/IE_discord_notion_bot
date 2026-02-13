@@ -286,7 +286,19 @@ def google_update_event(google_event_id, name, description, start_dt, end_dt, lo
 
 
 def google_delete_event(google_event_id):
+    # ------------------------------------------------------------
     # Google Calendar の既存イベントを削除する。
+    #
+    # 引数:
+    # - google_event_id: 削除対象のGoogleイベントID
+    #
+    # 出力:
+    # - 成功: True
+    # - 失敗: False
+    #
+    # 備考:
+    # service未初期化 / ID未指定時は削除を行わず False を返す。
+    # ------------------------------------------------------------
     service = get_google_calendar_service()
     if not service or not google_event_id:
         return False
@@ -675,6 +687,38 @@ def get_google_event_id_from_notion_page(page) -> str:
     if content:
         return str(content).strip() or None
     return None
+
+
+def is_bot_created_scheduled_event(event) -> bool:
+    # ------------------------------------------------------------
+    # Discord Scheduled Event が Bot 自身の作成かを判定する。
+    #
+    # 引数:
+    # - event: Discord Scheduled Event
+    #
+    # 出力:
+    # - True: Bot自身が作成したイベント
+    # - False: それ以外
+    #
+    # 判定順:
+    # 1) event.creator_id
+    # 2) event.creator.id
+    #
+    # 備考:
+    # Google -> Discord 同期で Bot が作成したイベントを再同期すると
+    # ループするため、Discord起点ハンドラ側でスキップ判定に使う。
+    # ------------------------------------------------------------
+    user = getattr(bot, "user", None)
+    if not user:
+        return False
+    creator_id = getattr(event, "creator_id", None)
+    if creator_id is not None and int(creator_id) == int(user.id):
+        return True
+    creator = getattr(event, "creator", None)
+    creator_obj_id = getattr(creator, "id", None) if creator else None
+    if creator_obj_id is not None and int(creator_obj_id) == int(user.id):
+        return True
+    return False
 
 
 def find_event_page(db_id, event_id_str):
@@ -1709,10 +1753,11 @@ async def on_scheduled_event_create(event):
     # Discord の Scheduled Event 作成時に呼ばれるイベントハンドラ。
     #
     # 処理概要:
-    # 1) Discordイベント情報を取得
-    # 2) Google Calendar へイベントを作成
-    # 3) 外部用Notion DBへ登録（定例会は除外）
-    # 4) 内部用Notion DBへ登録（定例会も含む）
+    # 1) Bot自身作成イベントなら同期をスキップ（ループ防止）
+    # 2) Discordイベント情報を取得
+    # 3) Google Calendar へイベントを作成
+    # 4) 外部用Notion DBへ登録（定例会は除外）
+    # 5) 内部用Notion DBへ登録（定例会も含む）
     #
     # 引数:
     # - event: Discord Scheduled Event
@@ -1725,6 +1770,9 @@ async def on_scheduled_event_create(event):
     ここで Notion のイベントDBに登録する
     """
     name = event.name
+    if is_bot_created_scheduled_event(event):
+        logger.info("Bot作成イベントのためDiscord->Google/Notion同期をスキップ: %s", name)
+        return
     description = event.description or "(内容なし)"
     start_iso = to_jst_iso(event.start_time)
     event_url = get_event_url(event)
@@ -1780,9 +1828,11 @@ async def on_scheduled_event_update(before, after):
     # Discord の Scheduled Event 更新時に呼ばれるイベントハンドラ。
     #
     # 処理概要:
-    # 1) after.id をキーに Notion 側の対応ページを検索
-    # 2) 外部用DBを更新（定例会は除外）
-    # 3) 内部用DBを更新（定例会も含む）
+    # 1) Bot自身作成イベントなら同期をスキップ（ループ防止）
+    # 2) after.id をキーに Notion 側の対応ページを検索
+    # 3) 外部用DBを更新（定例会は除外）
+    # 4) 内部用DBを更新（定例会も含む）
+    # 5) 内部DBの GoogleイベントID があれば Google Calendar も更新
     #
     # 引数:
     # - before: 更新前イベント
@@ -1796,6 +1846,9 @@ async def on_scheduled_event_update(before, after):
     Notion 側で「メッセージID == after.id」のページを探して更新
     """
     after_id_str = str(after.id)
+    if is_bot_created_scheduled_event(after):
+        logger.info("Bot作成イベントのためDiscord更新同期をスキップ: %s", after.name)
+        return
     event_url = get_event_url(after)
 
     # 外部用DB: 定例会は除外
@@ -1876,9 +1929,11 @@ async def on_scheduled_event_delete(event):
     # Discord の Scheduled Event 削除時に呼ばれるイベントハンドラ。
     #
     # 処理概要:
-    # 1) event.id をキーに Notion 側の対応ページを検索
-    # 2) 外部用DBをアーカイブ（定例会は除外）
-    # 3) 内部用DBをアーカイブ（定例会も含む）
+    # 1) Bot自身作成イベントなら同期をスキップ（ループ防止）
+    # 2) event.id をキーに Notion 側の対応ページを検索
+    # 3) 外部用DBをアーカイブ（定例会は除外）
+    # 4) 内部用DBをアーカイブ（定例会も含む）
+    # 5) 内部DBの GoogleイベントID があれば Google Calendar も削除
     #
     # 引数:
     # - event: Discord Scheduled Event
@@ -1888,9 +1943,12 @@ async def on_scheduled_event_delete(event):
     # ------------------------------------------------------------
     """
     Discord イベントが削除されたときに呼ばれる
-    Notion 側の対応するページをアーカイブ
+    Notion 側の対応するページをアーカイブし、必要に応じてGoogle側も削除
     """
     eid = str(event.id)
+    if is_bot_created_scheduled_event(event):
+        logger.info("Bot作成イベントのためDiscord削除同期をスキップ: %s", event.name)
+        return
 
     # 外部用DB: 定例会は除外
     if not is_ignored_event(event.name):
