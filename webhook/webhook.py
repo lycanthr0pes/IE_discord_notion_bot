@@ -530,7 +530,9 @@ def notion_update_event(
             "rich_text": [{"text": {"content": str(message_id)}}]
         }
     if location is not None and NOTION_LOCATION_PROPERTY:
-        props[NOTION_LOCATION_PROPERTY] = {"place": {"name": str(location)}}
+        props[NOTION_LOCATION_PROPERTY] = {
+            "rich_text": [{"text": {"content": str(location)}}]
+        }
 
     res = requests.patch(
         f"https://api.notion.com/v1/pages/{page_id}",
@@ -574,7 +576,9 @@ def notion_create_event(name, content, date_prop, creator_id, event_url, google_
         },
     }
     if location is not None and NOTION_LOCATION_PROPERTY:
-        data["properties"][NOTION_LOCATION_PROPERTY] = {"place": {"name": str(location)}}
+        data["properties"][NOTION_LOCATION_PROPERTY] = {
+            "rich_text": [{"text": {"content": str(location)}}]
+        }
     res = requests.post(url, headers=headers, json=data, timeout=30)
     if res.status_code not in (200, 201):
         logger.error("Notion create error: %s", res.text)
