@@ -100,6 +100,9 @@ def build_watch_request(channel_id):
     # ------------------------------------------------------------
     # Pub/Subトピックがあればそれを使い、無ければWebhook直叩きで登録
     if GCAL_PUBSUB_TOPIC:
+        if GCAL_WEBHOOK_URL:
+            logger.warning("Both GCAL_PUBSUB_TOPIC and GCAL_WEBHOOK_URL are set. Pub/Sub mode is used.")
+        logger.info("watch delivery mode=pubsub topic=%s", GCAL_PUBSUB_TOPIC)
         return {
             "id": channel_id,
             "type": "web_hook",
@@ -108,6 +111,7 @@ def build_watch_request(channel_id):
         }
     if not GCAL_WEBHOOK_URL:
         return None
+    logger.info("watch delivery mode=direct_webhook url=%s", GCAL_WEBHOOK_URL)
     return {"id": channel_id, "type": "web_hook", "address": GCAL_WEBHOOK_URL}
 
 

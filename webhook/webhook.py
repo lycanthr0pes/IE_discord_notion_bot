@@ -2,10 +2,13 @@ import json
 import os
 import logging
 from datetime import datetime, timezone, timedelta
+from collections import deque
 
 import requests
 from flask import Flask, request
+from google.auth.transport import requests as google_auth_requests
 from google.oauth2 import service_account
+from google.oauth2 import id_token
 from googleapiclient.discovery import build
 
 logging.basicConfig(
@@ -33,7 +36,12 @@ GOOGLE_SERVICE_ACCOUNT_JSON = getenv_clean("GOOGLE_SERVICE_ACCOUNT_JSON")
 GOOGLE_SERVICE_ACCOUNT_JSON_PATH = getenv_clean("GOOGLE_SERVICE_ACCOUNT_JSON_PATH")
 
 SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
-SYNC_STATE_FILE = "gcal_sync_state.json"
+STATE_DIR = getenv_clean("STATE_DIR", ".")
+SYNC_STATE_FILE = os.path.join(STATE_DIR, "gcal_sync_state.json")
+DEDUPE_STATE_FILE = os.path.join(STATE_DIR, "gcal_recent_messages.json")
+DEDUPE_MAX_IDS = int(getenv_clean("DEDUPE_MAX_IDS", "1000"))
+PUBSUB_PUSH_AUDIENCE = getenv_clean("PUBSUB_PUSH_AUDIENCE")
+PUBSUB_PUSH_SERVICE_ACCOUNT = getenv_clean("PUBSUB_PUSH_SERVICE_ACCOUNT")
 
 headers = {
     "Authorization": f"Bearer {NOTION_TOKEN}",
@@ -42,6 +50,8 @@ headers = {
 }
 
 _calendar_service = None
+_processed_message_ids = deque(maxlen=max(100, DEDUPE_MAX_IDS))
+_processed_message_set = set()
 
 
 def parse_rfc3339(value):
@@ -51,6 +61,72 @@ def parse_rfc3339(value):
         return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except Exception:
         return None
+
+
+def ensure_state_dir():
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+    except Exception as exc:
+        logger.error("Failed to create STATE_DIR=%s: %s", STATE_DIR, exc)
+
+
+def load_recent_message_ids():
+    if not os.path.exists(DEDUPE_STATE_FILE):
+        return
+    try:
+        with open(DEDUPE_STATE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        ids = data.get("ids", [])
+        for mid in ids[-_processed_message_ids.maxlen :]:
+            if mid not in _processed_message_set:
+                _processed_message_ids.append(mid)
+                _processed_message_set.add(mid)
+    except Exception as exc:
+        logger.warning("Failed to load dedupe state: %s", exc)
+
+
+def save_recent_message_ids():
+    ensure_state_dir()
+    try:
+        with open(DEDUPE_STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump({"ids": list(_processed_message_ids)}, f, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        logger.warning("Failed to save dedupe state: %s", exc)
+
+
+def register_message_id(message_id):
+    if not message_id:
+        return False
+    if message_id in _processed_message_set:
+        return True
+    if len(_processed_message_ids) == _processed_message_ids.maxlen:
+        oldest = _processed_message_ids[0]
+        _processed_message_set.discard(oldest)
+    _processed_message_ids.append(message_id)
+    _processed_message_set.add(message_id)
+    save_recent_message_ids()
+    return False
+
+
+def verify_pubsub_push_auth():
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header:
+        if PUBSUB_PUSH_AUDIENCE:
+            return False, "missing Authorization header"
+        return True, "no auth header"
+    if not auth_header.startswith("Bearer "):
+        return False, "invalid Authorization header"
+    token = auth_header.split(" ", 1)[1].strip()
+    if not PUBSUB_PUSH_AUDIENCE:
+        return True, "auth present but PUBSUB_PUSH_AUDIENCE not configured"
+    try:
+        req = google_auth_requests.Request()
+        info = id_token.verify_oauth2_token(token, req, PUBSUB_PUSH_AUDIENCE)
+        if PUBSUB_PUSH_SERVICE_ACCOUNT and info.get("email") != PUBSUB_PUSH_SERVICE_ACCOUNT:
+            return False, "service account email mismatch"
+        return True, "verified"
+    except Exception as exc:
+        return False, f"jwt verify failed: {exc}"
 
 
 def load_service_account_info():
@@ -117,6 +193,7 @@ def load_sync_state():
 
 
 def save_sync_state(updated_min):
+    ensure_state_dir()
     with open(SYNC_STATE_FILE, "w", encoding="utf-8") as f:
         json.dump({"updated_min": updated_min}, f, ensure_ascii=False, indent=2)
 
@@ -346,7 +423,7 @@ def sync_calendar_to_notion():
         logger.error(
             "Missing required envs: NOTION_TOKEN/NOTION_EVENT_INTERNAL_ID/GOOGLE_CALENDAR_ID"
         )
-        return
+        return False
 
     state = load_sync_state()
     updated_min = state.get("updated_min")
@@ -354,8 +431,13 @@ def sync_calendar_to_notion():
 
     events = list_updated_events(updated_min)
     logger.info("Google events fetched: %d", len(events))
+    had_error = False
     for event in events:
-        upsert_event_to_notion(event)
+        try:
+            upsert_event_to_notion(event)
+        except Exception as exc:
+            had_error = True
+            logger.exception("Upsert failed event_id=%s err=%s", event.get("id"), exc)
 
     updated_values = [parse_rfc3339(e.get("updated")) for e in events]
     updated_values = [d for d in updated_values if d is not None]
@@ -365,25 +447,66 @@ def sync_calendar_to_notion():
         else datetime.now(timezone.utc).isoformat()
     )
     save_sync_state(next_cursor)
-    logger.info("Sync completed next_updated_min=%s", next_cursor)
+    logger.info(
+        "Sync completed next_updated_min=%s events=%d had_error=%s",
+        next_cursor,
+        len(events),
+        had_error,
+    )
+    return not had_error
+
+
+ensure_state_dir()
+load_recent_message_ids()
+if not PUBSUB_PUSH_AUDIENCE:
+    logger.warning(
+        "PUBSUB_PUSH_AUDIENCE is not set. Webhook auth verification is effectively disabled."
+    )
 
 
 @app.route("/gcal/webhook", methods=["POST"])
 def gcal_webhook():
+    ok, reason = verify_pubsub_push_auth()
+    if not ok:
+        logger.warning("Webhook auth rejected: %s", reason)
+        return "unauthorized", 401
+
+    body = request.get_json(silent=True) or {}
+    pubsub_message = body.get("message", {}) if isinstance(body, dict) else {}
+    pubsub_message_id = pubsub_message.get("messageId") or pubsub_message.get("message_id")
+    if pubsub_message_id and register_message_id(f"pubsub:{pubsub_message_id}"):
+        logger.info("Duplicate Pub/Sub message skipped id=%s", pubsub_message_id)
+        return "", 204
+
+    goog_channel = request.headers.get("X-Goog-Channel-ID")
+    goog_message_num = request.headers.get("X-Goog-Message-Number")
+    goog_state = request.headers.get("X-Goog-Resource-State")
+    if goog_channel and goog_message_num:
+        dedupe_key = f"goog:{goog_channel}:{goog_message_num}"
+        if register_message_id(dedupe_key):
+            logger.info("Duplicate Google webhook message skipped key=%s", dedupe_key)
+            return "", 204
+
     logger.info(
-        "Webhook received ch=%s state=%s msg=%s",
-        request.headers.get("X-Goog-Channel-ID"),
-        request.headers.get("X-Goog-Resource-State"),
-        request.headers.get("X-Goog-Message-Number"),
+        "Webhook received mode=%s ch=%s state=%s msg=%s pubsub_id=%s auth=%s",
+        "pubsub" if pubsub_message_id else "direct",
+        goog_channel,
+        goog_state,
+        goog_message_num,
+        pubsub_message_id,
+        reason,
     )
-    sync_calendar_to_notion()
+    synced = sync_calendar_to_notion()
+    if not synced:
+        # Return 5xx so Pub/Sub push will retry.
+        return "sync failed", 500
     return "", 204
 
 
 @app.route("/gcal/sync", methods=["GET", "POST"])
 def manual_sync():
-    sync_calendar_to_notion()
-    return "ok", 200
+    synced = sync_calendar_to_notion()
+    return ("ok", 200) if synced else ("sync failed", 500)
 
 
 @app.route("/health", methods=["GET"])
