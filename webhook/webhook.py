@@ -136,6 +136,28 @@ def list_updated_events(updated_min):
 
     events = []
     page_token = None
+    def fetch_all_without_updated_min():
+        logger.warning("Retrying without updatedMin due to 410 updatedMinTooLongAgo")
+        all_events = []
+        token = None
+        while True:
+            resp = (
+                service.events()
+                .list(
+                    calendarId=GOOGLE_CALENDAR_ID,
+                    singleEvents=True,
+                    showDeleted=True,
+                    maxResults=2500,
+                    pageToken=token,
+                )
+                .execute()
+            )
+            all_events.extend(resp.get("items", []))
+            token = resp.get("nextPageToken")
+            if not token:
+                break
+        return all_events
+
     try:
         while True:
             resp = (
@@ -155,6 +177,12 @@ def list_updated_events(updated_min):
             if not page_token:
                 break
     except Exception as exc:
+        if "updatedMinTooLongAgo" in str(exc) or " 410 " in str(exc):
+            try:
+                return fetch_all_without_updated_min()
+            except Exception as retry_exc:
+                logger.error("Google event list retry failed: %s", retry_exc)
+                return []
         logger.error("Google event list failed: %s", exc)
         return []
 
