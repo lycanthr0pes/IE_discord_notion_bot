@@ -60,6 +60,7 @@ STATE_DIR = getenv_clean("STATE_DIR", ".")
 SYNC_STATE_FILE = os.path.join(STATE_DIR, "gcal_sync_state.json")
 DEDUPE_STATE_FILE = os.path.join(STATE_DIR, "gcal_recent_messages.json")
 GCAL_DISCORD_MAP_FILE = os.path.join(STATE_DIR, "gcal_discord_map.json")
+GCAL_NOTION_MAP_FILE = os.path.join(STATE_DIR, "gcal_notion_map.json")
 DEDUPE_MAX_IDS = int(getenv_clean("DEDUPE_MAX_IDS", "1000"))
 
 NOTION_PROP_TITLE = getenv_clean("NOTION_PROP_TITLE", "イベント名")
@@ -93,6 +94,7 @@ _calendar_service = None
 _processed_message_ids = deque(maxlen=max(100, DEDUPE_MAX_IDS))
 _processed_message_set = set()
 _gcal_discord_map = {}
+_gcal_notion_map = {"internal": {}, "external": {}}
 
 
 def parse_rfc3339(value):
@@ -221,6 +223,59 @@ def save_gcal_discord_map():
             json.dump({"map": _gcal_discord_map}, f, ensure_ascii=False, indent=2)
     except Exception as exc:
         logger.warning("Failed to save gcal_discord_map: %s", exc)
+
+
+def load_gcal_notion_map():
+    # GoogleイベントID -> NotionページID(内部/外部) の対応表を読み込む。
+    global _gcal_notion_map
+    if not os.path.exists(GCAL_NOTION_MAP_FILE):
+        _gcal_notion_map = {"internal": {}, "external": {}}
+        return
+    try:
+        with open(GCAL_NOTION_MAP_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        internal = data.get("internal", {}) or {}
+        external = data.get("external", {}) or {}
+        _gcal_notion_map = {
+            "internal": {str(k): str(v) for k, v in internal.items() if k and v},
+            "external": {str(k): str(v) for k, v in external.items() if k and v},
+        }
+    except Exception as exc:
+        logger.warning("Failed to load gcal_notion_map: %s", exc)
+        _gcal_notion_map = {"internal": {}, "external": {}}
+
+
+def save_gcal_notion_map():
+    # GoogleイベントID -> NotionページID(内部/外部) の対応表を保存する。
+    ensure_state_dir()
+    try:
+        with open(GCAL_NOTION_MAP_FILE, "w", encoding="utf-8") as f:
+            json.dump(_gcal_notion_map, f, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        logger.warning("Failed to save gcal_notion_map: %s", exc)
+
+
+def get_notion_page_id_by_google_id(google_event_id, scope):
+    # scope: internal|external
+    if not google_event_id or scope not in ("internal", "external"):
+        return None
+    return _gcal_notion_map.get(scope, {}).get(str(google_event_id))
+
+
+def set_notion_page_id_by_google_id(google_event_id, page_id, scope):
+    # scope: internal|external
+    if not google_event_id or not page_id or scope not in ("internal", "external"):
+        return
+    _gcal_notion_map.setdefault(scope, {})[str(google_event_id)] = str(page_id)
+    save_gcal_notion_map()
+
+
+def remove_notion_page_id_by_google_id(google_event_id, scope):
+    # scope: internal|external
+    if not google_event_id or scope not in ("internal", "external"):
+        return
+    _gcal_notion_map.setdefault(scope, {}).pop(str(google_event_id), None)
+    save_gcal_notion_map()
 
 
 def get_discord_event_id_by_google_id(google_event_id):
@@ -558,6 +613,17 @@ def notion_find_by_message_id(message_id, db_id):
         return None
     results = res.json().get("results", [])
     return results[0] if results else None
+
+
+def notion_get_page(page_id):
+    # ページIDで Notion ページを1件取得する。
+    if not page_id:
+        return None
+    res = requests.get(f"https://api.notion.com/v1/pages/{page_id}", headers=headers, timeout=30)
+    if res.status_code != 200:
+        return None
+    data = res.json()
+    return data if data.get("id") else None
 
 
 def notion_update_event(
@@ -1006,19 +1072,45 @@ def upsert_event(event):
     if not google_event_id:
         return
 
-    page = notion_find_by_google_event_id(google_event_id, db_id=NOTION_EVENT_INTERNAL_DB_ID)
+    page = None
+    mapped_internal_page_id = get_notion_page_id_by_google_id(google_event_id, "internal")
+    if mapped_internal_page_id:
+        page = notion_get_page(mapped_internal_page_id)
+        if not page:
+            remove_notion_page_id_by_google_id(google_event_id, "internal")
+    if not page:
+        page = notion_find_by_google_event_id(google_event_id, db_id=NOTION_EVENT_INTERNAL_DB_ID)
+        if page:
+            set_notion_page_id_by_google_id(google_event_id, page["id"], "internal")
+
     external_page = None
     if NOTION_EVENT_EXTERNAL_DB_ID:
-        external_page = notion_find_by_message_id(
-            message_id=google_event_id,
-            db_id=NOTION_EVENT_EXTERNAL_DB_ID,
-        )
+        mapped_external_page_id = get_notion_page_id_by_google_id(google_event_id, "external")
+        if mapped_external_page_id:
+            external_page = notion_get_page(mapped_external_page_id)
+            if not external_page:
+                remove_notion_page_id_by_google_id(google_event_id, "external")
+        if not external_page:
+            external_page = notion_find_by_message_id(
+                message_id=google_event_id,
+                db_id=NOTION_EVENT_EXTERNAL_DB_ID,
+            )
+            if not external_page:
+                # 旧データ移行向け: GoogleイベントID列での探索も試す
+                external_page = notion_find_by_google_event_id(
+                    google_event_id,
+                    db_id=NOTION_EVENT_EXTERNAL_DB_ID,
+                )
+            if external_page:
+                set_notion_page_id_by_google_id(google_event_id, external_page["id"], "external")
 
     if event.get("status") == "cancelled":
         if page:
             notion_archive_page(page)
+            remove_notion_page_id_by_google_id(google_event_id, "internal")
         if external_page:
             notion_archive_page(external_page)
+            remove_notion_page_id_by_google_id(google_event_id, "external")
         sync_to_discord(event, page)
         return
 
@@ -1043,6 +1135,7 @@ def upsert_event(event):
         )
         if updated:
             logger.info("Notion updated: %s (%s)", name, google_event_id)
+            set_notion_page_id_by_google_id(google_event_id, page["id"], "internal")
     else:
         page_id = notion_create_event(
             name=name,
@@ -1059,6 +1152,7 @@ def upsert_event(event):
             return
         logger.info("Notion created: %s (%s)", name, google_event_id)
         page = {"id": page_id, "properties": {}}
+        set_notion_page_id_by_google_id(google_event_id, page_id, "internal")
 
     if NOTION_EVENT_EXTERNAL_DB_ID:
         if external_page:
@@ -1071,6 +1165,7 @@ def upsert_event(event):
             )
             if ext_ok:
                 logger.info("Notion external updated: %s (%s)", name, google_event_id)
+                set_notion_page_id_by_google_id(google_event_id, external_page["id"], "external")
         else:
             ext_page_id = notion_create_event(
                 name=name,
@@ -1086,6 +1181,7 @@ def upsert_event(event):
             if ext_page_id:
                 logger.info("Notion external created: %s (%s)", name, google_event_id)
                 external_page = {"id": ext_page_id, "properties": {}}
+                set_notion_page_id_by_google_id(google_event_id, ext_page_id, "external")
 
     discord_event_id = sync_to_discord(event, page)
     if page and discord_event_id:
@@ -1149,6 +1245,7 @@ def sync_calendar():
 ensure_state_dir()
 load_recent_message_ids()
 load_gcal_discord_map()
+load_gcal_notion_map()
 
 
 @app.route("/gcal/webhook", methods=["POST"])
