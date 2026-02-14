@@ -1,7 +1,7 @@
 ﻿import os
 import json
 import logging
-import requests
+import aiohttp
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 import discord
@@ -57,6 +57,21 @@ headers = {
     "Notion-Version": "2022-06-28",
     "Content-Type": "application/json",
 }
+
+HTTP_TIMEOUT = aiohttp.ClientTimeout(total=30)
+
+
+async def notion_request(method: str, url: str, json_body=None):
+    async with aiohttp.ClientSession(timeout=HTTP_TIMEOUT) as session:
+        async with session.request(method, url, headers=headers, json=json_body) as res:
+            text = await res.text()
+            data = None
+            if text:
+                try:
+                    data = json.loads(text)
+                except json.JSONDecodeError:
+                    data = None
+            return res.status, text, data
 
 JST = timezone(timedelta(hours=9))
 
@@ -317,7 +332,7 @@ def google_delete_event(google_event_id):
 # ======================================================
 
 # イベントをNotionに新規作成（jsonを作成し送信）
-def notion_add_event(
+async def notion_add_event(
     db_id,
     name,
     content,
@@ -378,20 +393,20 @@ def notion_add_event(
         data["properties"]["場所"] = {
             "rich_text": [{"text": {"content": str(location)}}]
         }
-    res = requests.post(url, headers=headers, json=data)
-    if res.status_code not in (200, 201):
+    status, text, res_data = await notion_request("POST", url, json_body=data)
+    if status not in (200, 201):
         # ログ出力
-        logger.error("Notion作成エラー: %s", res.text)
+        logger.error("Notion作成エラー: %s", text)
         return None
 
     # ページIDを追加
-    page_id = res.json()["id"]
-    notion_update_event(page_id, page_uuid=page_id)
+    page_id = res_data["id"]
+    await notion_update_event(page_id, page_uuid=page_id)
     return page_id
 
 
 # Notion APIを使ってNotion上のイベントを取得し、JSONデータを返す
-def notion_get_event(page_id):
+async def notion_get_event(page_id):
     # ------------------------------------------------------------
     # page_id をキーに Notion のイベントページを1件取得する。
     #
@@ -402,13 +417,17 @@ def notion_get_event(page_id):
     # - 成功: ページJSON(dict)
     # - 失敗: None
     # ------------------------------------------------------------
-    res = requests.get(f"https://api.notion.com/v1/pages/{page_id}", headers=headers)
-    data = res.json()
+    status, _text, data = await notion_request(
+        "GET",
+        f"https://api.notion.com/v1/pages/{page_id}",
+    )
+    if status != 200 or not data:
+        return None
     return data if "id" in data else None
 
 
 # 指定されたNotionイベントのプロパティを更新する
-def notion_update_event(
+async def notion_update_event(
     page_id,
     name=None,
     content=None,
@@ -454,16 +473,16 @@ def notion_update_event(
     if location is not None:
         props["場所"] = {"rich_text": [{"text": {"content": str(location)}}]}
 
-    res = requests.patch(
+    status, _text, _data = await notion_request(
+        "PATCH",
         f"https://api.notion.com/v1/pages/{page_id}",
-        headers=headers,
-        json={"properties": props},
+        json_body={"properties": props},
     )
-    return res.status_code in (200, 201)
+    return status in (200, 201)
 
 
 # イベントをNotionからアーカイブ扱いで削除する
-def notion_delete_event(page_id):
+async def notion_delete_event(page_id):
     # ------------------------------------------------------------
     # Notionページをアーカイブ扱いで削除する（archived=True）。
     #
@@ -477,18 +496,18 @@ def notion_delete_event(page_id):
     url = f"https://api.notion.com/v1/pages/{page_id}"
     data = {"archived": True}
 
-    res = requests.patch(url, headers=headers, json=data)
+    status, text, _res_data = await notion_request("PATCH", url, json_body=data)
 
     #ログ出力
-    if res.status_code not in (200, 201):
-        logger.error("Notion削除エラー: %s", res.text)
+    if status not in (200, 201):
+        logger.error("Notion削除エラー: %s", text)
         return False
 
     return True
 
 
 # 過去(当日より前)のイベントをNotionからアーカイブ扱いで削除する
-def delete_past_events_for_db(db_id):
+async def delete_past_events_for_db(db_id):
     # ------------------------------------------------------------
     # 指定DB内のイベントを走査し、30日以上前の予定をアーカイブする。
     #
@@ -506,13 +525,15 @@ def delete_past_events_for_db(db_id):
         return
     # クエリを送って全イベントを取得（json）
     url = f"https://api.notion.com/v1/databases/{db_id}/query"
-    res = requests.post(url, headers=headers, json={}).json()
+    status, _text, data = await notion_request("POST", url, json_body={})
+    if status != 200 or not data:
+        return
 
     # 日付(日本時間)を取得
     today = datetime.now(JST).date()
 
     # jsonから各イベントの日時プロパティを確認
-    for page in res.get("results", []):
+    for page in data.get("results", []):
         date_prop = page["properties"]["日時"]["date"]
         if not date_prop:
             continue
@@ -522,16 +543,16 @@ def delete_past_events_for_db(db_id):
 
         # 今日から30日以上前なら削除
         if (today - dt).days >= 30:
-            requests.patch(
+            await notion_request(
+                "PATCH",
                 f"https://api.notion.com/v1/pages/{page['id']}",
-                headers=headers,
-                json={"archived": True},
+                json_body={"archived": True},
             )
             # ログ出力
             logger.info("[AUTO DELETE] %s をアーカイブ（削除）しました (%s)", page["id"], dt)
 
 
-def delete_finished_events_for_db(db_id):
+async def delete_finished_events_for_db(db_id):
     # ------------------------------------------------------------
     # 指定DB内のイベントを走査し、終了時刻を過ぎた予定をアーカイブする。
     #
@@ -549,11 +570,13 @@ def delete_finished_events_for_db(db_id):
         return
     # クエリを送って全イベントを取得（json）
     url = f"https://api.notion.com/v1/databases/{db_id}/query"
-    res = requests.post(url, headers=headers, json={}).json()
+    status, _text, data = await notion_request("POST", url, json_body={})
+    if status != 200 or not data:
+        return
 
     now = datetime.now(JST)
 
-    for page in res.get("results", []):
+    for page in data.get("results", []):
         date_prop = page["properties"]["日時"]["date"]
         if not date_prop:
             continue
@@ -566,15 +589,15 @@ def delete_finished_events_for_db(db_id):
         end_dt = datetime.fromisoformat(end_iso)
 
         if end_dt <= now:
-            requests.patch(
+            await notion_request(
+                "PATCH",
                 f"https://api.notion.com/v1/pages/{page['id']}",
-                headers=headers,
-                json={"archived": True},
+                json_body={"archived": True},
             )
             logger.info("[AUTO DELETE] %s を終了時刻によりアーカイブしました (%s)", page["id"], end_dt)
 
 
-def delete_past_events():
+async def delete_past_events():
     # ------------------------------------------------------------
     # DB種別ごとの自動削除ポリシーをまとめて実行する。
     #
@@ -586,13 +609,13 @@ def delete_past_events():
     # - なし
     # ------------------------------------------------------------
     # 外部用は30日以上前で削除
-    delete_past_events_for_db(NOTION_EVENT_EXTERNAL_DB_ID)
+    await delete_past_events_for_db(NOTION_EVENT_EXTERNAL_DB_ID)
     # 内部用は終了時刻を過ぎたら削除
-    delete_finished_events_for_db(NOTION_EVENT_INTERNAL_DB_ID)
+    await delete_finished_events_for_db(NOTION_EVENT_INTERNAL_DB_ID)
 
 
 # クエリを送って全イベントを取得（json）
-def fetch_event_pages(db_id):
+async def fetch_event_pages(db_id):
     # ------------------------------------------------------------
     # 指定Notion DBのページ一覧を取得する。
     #
@@ -606,12 +629,12 @@ def fetch_event_pages(db_id):
     if not db_id:
         return []
     url = f"https://api.notion.com/v1/databases/{db_id}/query"
-    res = requests.post(url, headers=headers, json={})
-    if res.status_code != 200:
+    status, text, data = await notion_request("POST", url, json_body={})
+    if status != 200:
         # ログ出力
-        logger.error("イベント一覧取得失敗: %s", res.text)
+        logger.error("イベント一覧取得失敗: %s", text)
         return []
-    return res.json().get("results", [])
+    return data.get("results", []) if data else []
 
 # イベント名が除外ワード("定例会")を含むかどうか
 def is_ignored_event(name: str) -> bool:
@@ -720,7 +743,7 @@ def is_bot_created_scheduled_event(event) -> bool:
     return False
 
 
-def find_event_page(db_id, event_id_str):
+async def find_event_page(db_id, event_id_str):
     # ------------------------------------------------------------
     # Notion DB内から「メッセージID == event_id_str」のページを検索する。
     #
@@ -735,7 +758,7 @@ def find_event_page(db_id, event_id_str):
     # 備考:
     # Discordイベント更新/削除時にNotionページを特定するための関数。
     # ------------------------------------------------------------
-    pages = fetch_event_pages(db_id)
+    pages = await fetch_event_pages(db_id)
     for page in pages:
         prop = page["properties"].get("メッセージID", {}).get("rich_text", [])
         if not prop:
@@ -751,7 +774,7 @@ def find_event_page(db_id, event_id_str):
 # ======================================================
 
 # Q&A DBの取得・差分管理
-def fetch_qa_db():
+async def fetch_qa_db():
     # ------------------------------------------------------------
     # Q&A 用 Notion DB をクエリしてページ一覧を取得する。
     #
@@ -763,8 +786,8 @@ def fetch_qa_db():
     # - 失敗: None
     # ------------------------------------------------------------
     url = f"https://api.notion.com/v1/databases/{NOTION_QA_DB_ID}/query"
-    res = requests.post(url, headers=headers, json={})
-    return res.json() if res.status_code == 200 else None
+    status, _text, data = await notion_request("POST", url, json_body={})
+    return data if status == 200 else None
 
 #ローカルにjsonファイル作成
 CACHE_FILE = "notion_cache.json"
@@ -856,7 +879,7 @@ def save_reminder_cache(cache):
         json.dump(cache, f, ensure_ascii=False, indent=2)
 
 # 新規 / 更新ページの検出
-def get_qa_changes():
+async def get_qa_changes():
     # ------------------------------------------------------------
     # Notion Q&A DB の新規/更新ページを差分検出する。
     #
@@ -871,7 +894,7 @@ def get_qa_changes():
     # 比較キーは page_id と last_edited_time。
     # 判定後に最新状態をキャッシュへ保存する。
     # ------------------------------------------------------------
-    data = fetch_qa_db()
+    data = await fetch_qa_db()
     if not data:
         return []
 
@@ -923,7 +946,7 @@ def get_answer(page) -> str:
     return t[0]["plain_text"] if t else "(回答なし)"
 
 # 未回答の質問一覧
-def fetch_unanswered():
+async def fetch_unanswered():
     # ------------------------------------------------------------
     # 回答プロパティが空の質問ページ一覧を取得する。
     #
@@ -936,12 +959,12 @@ def fetch_unanswered():
     # ------------------------------------------------------------
     url = f"https://api.notion.com/v1/databases/{NOTION_QA_DB_ID}/query"
     data = {"filter": {"property": "回答", "rich_text": {"is_empty": True}}}
-    res = requests.post(url, headers=headers, json=data)
+    status, _text, res_data = await notion_request("POST", url, json_body=data)
     # APIリクエストが成功したらjsonを返す
-    return res.json().get("results", []) if res.status_code == 200 else []
+    return res_data.get("results", []) if status == 200 and res_data else []
 
 # 回答済みの質問一覧
-def fetch_answered():
+async def fetch_answered():
     # ------------------------------------------------------------
     # 回答プロパティが埋まっている質問ページ一覧を取得する。
     #
@@ -954,11 +977,11 @@ def fetch_answered():
     # ------------------------------------------------------------
     url = f"https://api.notion.com/v1/databases/{NOTION_QA_DB_ID}/query"
     data = {"filter": {"property": "回答", "rich_text": {"is_not_empty": True}}}
-    res = requests.post(url, headers=headers, json=data)
-    return res.json().get("results", []) if res.status_code == 200 else []
+    status, _text, res_data = await notion_request("POST", url, json_body=data)
+    return res_data.get("results", []) if status == 200 and res_data else []
 
 # Notionに回答を書き込む
-def update_answer(page_id, answer: str) -> bool:
+async def update_answer(page_id, answer: str) -> bool:
     # ------------------------------------------------------------
     # 指定ページの「回答」プロパティを更新する。
     #
@@ -979,10 +1002,11 @@ def update_answer(page_id, answer: str) -> bool:
         }
     }
     # 更新リクエストと成功判定
-    return requests.patch(url, headers=headers, json=data).status_code == 200
+    status, _text, _res_data = await notion_request("PATCH", url, json_body=data)
+    return status == 200
 
 
-def ensure_question_numbers():
+async def ensure_question_numbers():
     # ------------------------------------------------------------
     # 質問番号が未採番のページに連番を付与する。
     #
@@ -998,7 +1022,7 @@ def ensure_question_numbers():
     # 3) next_num から順に採番して保存
     # ------------------------------------------------------------
     # 質問番号を持たないページにだけ、追加順で新しい番号を付与する
-    data = fetch_qa_db()
+    data = await fetch_qa_db()
     if not data:
         return
 
@@ -1021,7 +1045,7 @@ def ensure_question_numbers():
         page_id = page["id"]
         url = f"https://api.notion.com/v1/pages/{page_id}"
         data = {"properties": {"質問番号": {"number": next_num}}}
-        requests.patch(url, headers=headers, json=data)
+        await notion_request("PATCH", url, json_body=data)
         next_num += 1
 
     # ログ出力
@@ -1158,7 +1182,7 @@ class QAnswerModal(discord.ui.Modal):
         # - なし
         # ------------------------------------------------------------
         # Notionに回答を書き込み、成功時のみ回答者へDM再送
-        ok = update_answer(self.page_id, self.answer.value)
+        ok = await update_answer(self.page_id, self.answer.value)
         if ok:
             await interaction.response.send_message(
                 f"✅ 回答を保存しました。（#{self.number}）",
@@ -1233,7 +1257,7 @@ class QEditModal(discord.ui.Modal):
         # - なし
         # ------------------------------------------------------------
         # 既存回答を更新し、成功時は回答者へDM再送
-        ok = update_answer(self.page_id, self.answer.value)
+        ok = await update_answer(self.page_id, self.answer.value)
         if ok:
             await interaction.response.send_message(
                 f"✅ 回答を更新しました。（#{self.number}）",
@@ -1437,8 +1461,8 @@ class QACommands(commands.Cog):
             )
         
         # Bot側で自動連番
-        ensure_question_numbers()
-        pages = fetch_unanswered() # 未回答ページ取得
+        await ensure_question_numbers()
+        pages = await fetch_unanswered() # 未回答ページ取得
         if not pages:
             return await interaction.response.send_message(
                 "未回答の質問はありません。", ephemeral=True
@@ -1475,8 +1499,8 @@ class QACommands(commands.Cog):
                 ephemeral=True,
             )
         # Bot側で自動連番
-        ensure_question_numbers()
-        pages = fetch_answered() # 未回答ページ取得
+        await ensure_question_numbers()
+        pages = await fetch_answered() # 未回答ページ取得
         if not pages:
             return await interaction.response.send_message(
                 "回答済みの質問がありません。", ephemeral=True
@@ -1559,7 +1583,7 @@ async def auto_clean():
     # - なし（副作用で Notion ページをアーカイブ）
     # ------------------------------------------------------------
     # イベントの過去データ削除（24時間毎）
-    delete_past_events()
+    await delete_past_events()
 
 
 @tasks.loop(hours=6)
@@ -1585,8 +1609,8 @@ async def auto_check_qa(bot: commands.Bot):
     # Q&A DBの変更監視（6時間毎）
     global FIRST_QA_RUN
 
-    ensure_question_numbers()
-    changes = get_qa_changes()
+    await ensure_question_numbers()
+    changes = await get_qa_changes()
 
     # 起動直後は通知せず、キャッシュ作成だけ行う
     if FIRST_QA_RUN:
@@ -1728,7 +1752,7 @@ async def on_ready():
     logger.info("FIRST_QA_RUN = %s", FIRST_QA_RUN)
     validate_google_calendar_connection()
 
-    ensure_question_numbers()
+    await ensure_question_numbers()
 
     if not auto_clean.is_running():
         auto_clean.start()
@@ -1794,7 +1818,7 @@ async def on_scheduled_event_create(event):
 
     # 外部用DB: 定例会は除外
     if not is_ignored_event(event.name):
-        notion_add_event(
+        await notion_add_event(
             NOTION_EVENT_EXTERNAL_DB_ID,
             name=name,
             content=description,
@@ -1807,7 +1831,7 @@ async def on_scheduled_event_create(event):
         logger.warning("外部用DBは除外イベントのため登録しません: %s", event.name)
 
     # 内部用DB: 定例会も含めて登録（URL/GoogleイベントID付き）
-    notion_add_event(
+    await notion_add_event(
         NOTION_EVENT_INTERNAL_DB_ID,
         name=name,
         content=description,
@@ -1854,12 +1878,12 @@ async def on_scheduled_event_update(before, after):
     # 外部用DB: 定例会は除外
     target = None
     if not is_ignored_event(after.name):
-        target = find_event_page(NOTION_EVENT_EXTERNAL_DB_ID, after_id_str)
+        target = await find_event_page(NOTION_EVENT_EXTERNAL_DB_ID, after_id_str)
     else:
         logger.warning("外部用DBは除外イベントのため更新しません: %s", after.name)
 
     # 内部用DB: 定例会も含めて更新
-    internal_target = find_event_page(NOTION_EVENT_INTERNAL_DB_ID, after_id_str)
+    internal_target = await find_event_page(NOTION_EVENT_INTERNAL_DB_ID, after_id_str)
 
     new_name = after.name
     new_content = after.description or "(内容なし)"
@@ -1870,7 +1894,7 @@ async def on_scheduled_event_update(before, after):
     # 内部DBに保存した GoogleイベントID があれば、Googleカレンダー側も更新する。
     google_event_id = None
     if internal_target:
-        internal_page = notion_get_event(internal_target["id"])
+        internal_page = await notion_get_event(internal_target["id"])
         google_event_id = get_google_event_id_from_notion_page(internal_page)
     if google_event_id:
         google_updated = google_update_event(
@@ -1890,7 +1914,7 @@ async def on_scheduled_event_update(before, after):
 
     if target:
         page_id = target["id"]
-        ok = notion_update_event(
+        ok = await notion_update_event(
             page_id,
             name=new_name,
             content=new_content,
@@ -1906,7 +1930,7 @@ async def on_scheduled_event_update(before, after):
 
     if internal_target:
         page_id = internal_target["id"]
-        ok = notion_update_event(
+        ok = await notion_update_event(
             page_id,
             name=new_name,
             content=new_content,
@@ -1952,9 +1976,9 @@ async def on_scheduled_event_delete(event):
 
     # 外部用DB: 定例会は除外
     if not is_ignored_event(event.name):
-        target = find_event_page(NOTION_EVENT_EXTERNAL_DB_ID, eid)
+        target = await find_event_page(NOTION_EVENT_EXTERNAL_DB_ID, eid)
         if target:
-            if notion_delete_event(target["id"]):
+            if await notion_delete_event(target["id"]):
                 logger.info("Discordイベント削除 -> 外部用Notion削除: %s", event.name)
             else:
                 logger.error("外部用Notion イベント削除に失敗しました。")
@@ -1965,9 +1989,9 @@ async def on_scheduled_event_delete(event):
         logger.warning("外部用DBは除外イベントの削除は無視します: %s", event.name)
 
     # 内部用DB: 定例会も含めて削除
-    internal_target = find_event_page(NOTION_EVENT_INTERNAL_DB_ID, eid)
+    internal_target = await find_event_page(NOTION_EVENT_INTERNAL_DB_ID, eid)
     if internal_target:
-        internal_page = notion_get_event(internal_target["id"])
+        internal_page = await notion_get_event(internal_target["id"])
         google_event_id = get_google_event_id_from_notion_page(internal_page)
         if google_event_id:
             deleted = google_delete_event(google_event_id)
@@ -1977,7 +2001,7 @@ async def on_scheduled_event_delete(event):
                 logger.error("Googleカレンダー イベント削除に失敗しました。")
         else:
             logger.warning("GoogleイベントIDが見つからないためGoogle削除をスキップします: %s", event.name)
-        if notion_delete_event(internal_target["id"]):
+        if await notion_delete_event(internal_target["id"]):
             logger.info("Discordイベント削除 -> 内部用Notion削除: %s", event.name)
         else:
             logger.error("内部用Notion イベント削除に失敗しました。")
