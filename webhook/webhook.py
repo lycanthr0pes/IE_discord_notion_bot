@@ -1142,6 +1142,13 @@ def upsert_event(event):
     event_url = event.get("htmlLink")
     location = event.get("location")
     creator_id = event.get("creator", {}).get("email") or "unknown"
+    _start_dt, end_dt = parse_google_event_times(event)
+    now_utc = datetime.now(timezone.utc)
+    skip_internal_create = (
+        page is None
+        and end_dt is not None
+        and end_dt.astimezone(timezone.utc) <= now_utc
+    )
     date_prop = build_notion_date(event)
     if not date_prop:
         return
@@ -1159,7 +1166,7 @@ def upsert_event(event):
         if updated:
             logger.info("Notion updated: %s (%s)", name, google_event_id)
             set_notion_page_id_by_google_id(google_event_id, page["id"], "internal")
-    else:
+    elif not skip_internal_create:
         page_id = notion_create_event(
             name=name,
             content=content,
@@ -1176,6 +1183,11 @@ def upsert_event(event):
         logger.info("Notion created: %s (%s)", name, google_event_id)
         page = {"id": page_id, "properties": {}}
         set_notion_page_id_by_google_id(google_event_id, page_id, "internal")
+    else:
+        logger.info(
+            "Skip internal Notion recreate for finished event: google_event_id=%s",
+            google_event_id,
+        )
 
     if NOTION_EVENT_EXTERNAL_DB_ID:
         if external_page:

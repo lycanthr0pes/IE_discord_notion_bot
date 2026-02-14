@@ -32,6 +32,11 @@ Discord と Google Calendar / Notion を同期する Bot です。
 - `watcher`: Google Calendar watch 登録 / 更新
 - `webhook`: Google Calendar 通知受信 + Notion / Discord 反映
 
+## Auto Achieve
+
+- 外部DB: イベント日が「今日から30日以上前」ならアーカイブ
+- 内部DB: イベントの終了時刻（end なければ start）が「現在時刻以下」ならアーカイブ
+
 ## Command Features
 
 ### Discord Slash Commands
@@ -103,3 +108,52 @@ Discord と Google Calendar / Notion を同期する Bot です。
   - `Sync completed`
   - Notion API エラー有無
 
+## Notion DB Recovery Checklist
+
+Notion DB を誤って直接編集した場合は、次の順で復旧する。
+
+1. まずDBを複製し、復旧作業は複製側で実施する。
+2. プロパティ名と型を確認し、スキーマを戻す。
+3. ID系プロパティ（`メッセージID` / `GoogleイベントID`）を復元する。
+4. 重複ページを整理して不要ページをアーカイブする。
+5. 同期を手動実行し、ログで整合性を確認する。
+
+### Required Properties
+
+- 内部用DB（必須）
+  - `イベント名` (title)
+  - `内容` (rich_text)
+  - `日時` (date)
+  - `メッセージID` (rich_text)
+  - `作成者ID` (rich_text)
+  - `ページID` (rich_text)
+  - `イベントURL` (url)
+  - `GoogleイベントID` (rich_text)
+  - `場所` (rich_text)
+- 外部用DB（必須）
+  - `イベント名` (title)
+  - `内容` (rich_text)
+  - `日時` (date)
+  - `メッセージID` (rich_text)
+  - `作成者ID` (rich_text)
+  - `ページID` (rich_text)
+  - `GoogleイベントID` (rich_text)
+
+### ID復元の優先順
+
+1. Discord同期を復旧したい場合:
+   `メッセージID` に Discord Scheduled Event ID を入れる。
+2. Google同期を復旧したい場合:
+   内部用DBの `GoogleイベントID` に Google Event ID を入れる。
+3. 外部用DBは `メッセージID` と `GoogleイベントID` のどちらでも webhook 側で照合されるが、混在させない。
+
+### Re-sync and Verification
+
+1. 手動同期を実行:
+   - `GET /gcal/sync`
+   - または `POST /gcal/sync`
+2. `webhook` ログで以下を確認:
+   - `Google events fetched: N`
+   - `Sync completed`
+3. `bot` ログで以下を確認:
+   - Google更新/削除スキップ警告が増えていないこと

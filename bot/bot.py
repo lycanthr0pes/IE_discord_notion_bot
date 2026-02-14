@@ -1802,7 +1802,6 @@ async def on_scheduled_event_create(event):
             message_id=event.id,  # メッセージID枠にイベントIDを保存
             creator_id=creator_id,
             google_event_id=google_event_id,
-            location=event_location,
         )
     else:
         logger.warning("外部用DBは除外イベントのため登録しません: %s", event.name)
