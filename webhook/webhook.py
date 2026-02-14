@@ -42,7 +42,6 @@ def getenv_clean(name: str, default=None):
 NOTION_TOKEN = getenv_clean("NOTION_TOKEN")
 NOTION_EVENT_INTERNAL_DB_ID = getenv_clean("NOTION_EVENT_INTERNAL_ID")
 NOTION_EVENT_EXTERNAL_DB_ID = getenv_clean("NOTION_EVENT_ID")
-NOTION_LOCATION_PROPERTY = getenv_clean("NOTION_LOCATION_PROPERTY", "場所")
 
 GOOGLE_CALENDAR_ID = getenv_clean("GOOGLE_CALENDAR_ID")
 GOOGLE_SERVICE_ACCOUNT_JSON = getenv_clean("GOOGLE_SERVICE_ACCOUNT_JSON")
@@ -673,8 +672,8 @@ def notion_update_event(
         props[NOTION_PROP_MESSAGE_ID] = {
             "rich_text": [{"text": {"content": str(message_id)}}]
         }
-    if location is not None and NOTION_LOCATION_PROPERTY:
-        props[NOTION_LOCATION_PROPERTY] = {
+    if location is not None:
+        props["場所"] = {
             "rich_text": [{"text": {"content": str(location)}}]
         }
 
@@ -733,8 +732,8 @@ def notion_create_event(
         data["properties"][NOTION_PROP_GOOGLE_EVENT_ID] = {
             "rich_text": [{"text": {"content": str(google_event_id)}}]
         }
-    if location is not None and NOTION_LOCATION_PROPERTY:
-        data["properties"][NOTION_LOCATION_PROPERTY] = {
+    if location is not None:
+        data["properties"]["場所"] = {
             "rich_text": [{"text": {"content": str(location)}}]
         }
     res = requests.post(url, headers=headers, json=data, timeout=30)

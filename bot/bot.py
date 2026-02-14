@@ -1,5 +1,4 @@
 ﻿import os
-import re
 import json
 import logging
 import requests
@@ -33,10 +32,10 @@ NOTION_TOKEN = getenv_clean("NOTION_TOKEN")
 # Q&A 用（質問 / 回答 / 質問番号）
 NOTION_QA_DB_ID = getenv_clean("NOTION_QA_ID")
 
-# イベント用（外部用: イベント名 / 内容 / 日時 / メッセージID / 作成者ID / ページID）
+# イベント用（外部用: イベント名 / 内容 / 日時 / メッセージID / 作成者ID / ページID / GoogleイベントID）
 NOTION_EVENT_EXTERNAL_DB_ID = getenv_clean("NOTION_EVENT_ID")
 
-# イベント用（内部用: イベント名 / 内容 / 日時 / メッセージID / 作成者ID / ページID / イベントURL）
+# イベント用（内部用: イベント名 / 内容 / 日時 / 場所 / メッセージID / 作成者ID / ページID / イベントURL / GoogleイベントID
 NOTION_EVENT_INTERNAL_DB_ID = getenv_clean("NOTION_EVENT_INTERNAL_ID")
 
 # Googleカレンダー連携
