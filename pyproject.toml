@@ -1,0 +1,12 @@
+[project]
+name = "ie-event-bot"
+version = "0.1.0"
+description = "Discord, Google Calendar, and Notion integration bot"
+requires-python = ">=3.10"
+
+[project.optional-dependencies]
+dev = [
+  "ruff",
+  "pytest",
+]
+

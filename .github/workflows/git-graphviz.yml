@@ -1,0 +1,119 @@
+name: Git Graphviz
+
+on:
+  push:
+    branches: [main, develop]
+  workflow_dispatch: {}
+
+jobs:
+  graph:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Graphviz
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y graphviz
+
+      - name: Fetch all remote branches
+        run: |
+          git fetch --prune --tags origin "+refs/heads/*:refs/remotes/origin/*"
+
+      - name: Generate DOT + PNG (main/develop/release/hotfix only)
+        run: |
+          python - << 'PY'
+          import subprocess
+          from pathlib import Path
+
+          out_dir = Path("docs/git-graph")
+          out_dir.mkdir(parents=True, exist_ok=True)
+          dot_path = out_dir / "graph.dot"
+          png_path = out_dir / "graph.png"
+          max_commits = 300
+
+          patterns = [
+              "refs/remotes/origin/main",
+              "refs/remotes/origin/develop",
+              "refs/remotes/origin/release/*",
+              "refs/remotes/origin/hotfix/*",
+          ]
+          ref_cmd = ["git", "for-each-ref", "--format=%(refname)", *patterns]
+          refs = subprocess.check_output(ref_cmd, text=True, errors="replace").splitlines()
+          refs = [r.strip() for r in refs if r.strip()]
+
+          if not refs:
+              raise SystemExit("No matching refs found.")
+
+          log_cmd = [
+              "git",
+              "log",
+              f"-n{max_commits}",
+              "--date-order",
+              "--pretty=format:%H%x09%P%x09%D%x09%s",
+              *refs,
+          ]
+          raw = subprocess.check_output(log_cmd, text=True, errors="replace")
+          lines = raw.splitlines()
+
+          nodes = {}
+          edges = []
+
+          for line in lines:
+              parts = line.split("\t", 3)
+              if len(parts) < 4:
+                  continue
+              commit, parents, refs_str, subject = [p.strip() for p in parts]
+              show_refs = []
+              if refs_str:
+                  items = [x.strip() for x in refs_str.strip("()").split(",")]
+                  for it in items:
+                      it = it.replace("HEAD -> ", "")
+                      if (
+                          it == "origin/main"
+                          or it == "origin/develop"
+                          or it.startswith("origin/release/")
+                          or it.startswith("origin/hotfix/")
+                      ):
+                          show_refs.append(it)
+              short = commit[:7]
+              label_lines = [short]
+              if show_refs:
+                  label_lines.append(", ".join(show_refs))
+              if subject:
+                  s = subject if len(subject) <= 60 else subject[:57] + "..."
+                  label_lines.append(s)
+              nodes[commit] = "\\n".join(label_lines)
+              if parents:
+                  for parent in parents.split():
+                      edges.append((parent, commit))
+
+          def esc(s: str) -> str:
+              return s.replace("\\\\", "\\\\\\\\").replace("\"", "\\\\\"")
+
+          dot = []
+          dot.append("digraph GitHistory {")
+          dot.append("  rankdir=LR;")
+          dot.append('  graph [splines=true, overlap=false];')
+          dot.append('  node [shape=box, style="rounded", fontsize=10];')
+          dot.append("  edge [arrowsize=0.7];")
+          for h, label in nodes.items():
+              dot.append(f'  "{h}" [label="{esc(label)}"];')
+          for parent, child in edges:
+              if parent not in nodes:
+                  dot.append(f'  "{parent}" [label="{parent[:7]}", shape=ellipse, fontsize=9];')
+              dot.append(f'  "{parent}" -> "{child}";')
+          dot.append("}")
+
+          dot_path.write_text("\n".join(dot), encoding="utf-8")
+          subprocess.check_call(["dot", "-Tpng", str(dot_path), "-o", str(png_path)])
+          print(f"Generated: {png_path}")
+          PY
+
+      - name: Upload graph artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: git-graph
+          path: docs/git-graph/

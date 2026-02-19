@@ -1,0 +1,47 @@
+name: PR Target Guard
+
+on:
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enforce base branch rules by head branch prefix
+        run: |
+          HEAD="${{ github.event.pull_request.head.ref }}"
+          BASE="${{ github.event.pull_request.base.ref }}"
+          echo "HEAD=$HEAD"
+          echo "BASE=$BASE"
+
+          if [[ "$HEAD" == feature/* ]]; then
+            if [[ "$BASE" != "develop" ]]; then
+              echo "::error::feature/* PR must target develop (got $BASE)"
+              exit 1
+            fi
+          fi
+
+          if [[ "$HEAD" == release/* ]]; then
+            if [[ "$BASE" != "main" ]]; then
+              echo "::error::release/* PR must target main (got $BASE)"
+              exit 1
+            fi
+          fi
+
+          if [[ "$HEAD" == hotfix/* ]]; then
+            if [[ "$BASE" != "main" ]]; then
+              echo "::error::hotfix/* PR must target main (got $BASE)"
+              exit 1
+            fi
+          fi
+
+          if [[ "$HEAD" == sync/* ]]; then
+            if [[ "$BASE" != "develop" ]]; then
+              echo "::error::sync/* PR must target develop (got $BASE)"
+              exit 1
+            fi
+          fi
+
+          echo "OK"
+

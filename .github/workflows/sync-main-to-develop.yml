@@ -1,0 +1,48 @@
+name: Sync main -> develop PR (auto)
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync_pr:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Determine branch name
+        id: vars
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          BR="sync/main-to-develop-${TAG}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "branch=${BR}" >> "$GITHUB_OUTPUT"
+      - name: Create sync branch from main and push
+        run: |
+          git fetch origin main develop
+          git checkout -B "${{ steps.vars.outputs.branch }}" origin/main
+          git push -u origin "${{ steps.vars.outputs.branch }}" --force
+      - name: Create PR if not exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BR="${{ steps.vars.outputs.branch }}"
+          TAG="${{ steps.vars.outputs.tag }}"
+          EXIST=$(gh pr list --head "$BR" --base develop --state open --json number --jq 'length')
+          if [ "$EXIST" != "0" ]; then
+            echo "Sync PR already exists for $BR -> develop. Skipping."
+            exit 0
+          fi
+          gh pr create \
+            --base develop \
+            --head "$BR" \
+            --title "chore(sync): main -> develop (${TAG})" \
+            --body "Automated sync after release ${TAG}."
+
